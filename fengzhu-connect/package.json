@@ -1,0 +1,25 @@
+{
+  "name": "fengzhu-connect",
+  "version": "0.2.145",
+  "private": true,
+  "type": "commonjs",
+  "files": ["src", "scripts", "native", "dsh-bridge", "bin/fengzhu-desktop-adapter-v2.1-0.2.121-composer.exe", "bin/khlink-claude-desktop-native-v1.dll"],
+  "bin": {
+    "fengzhu-connect": "src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js start",
+    "setup": "node src/cli.js setup",
+    "doctor": "node src/cli.js doctor",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@primno/dpapi": "2.0.1",
+    "libsodium-wrappers-sumo": "0.8.4",
+    "werift": "0.24.4",
+    "ws": "^8.18.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

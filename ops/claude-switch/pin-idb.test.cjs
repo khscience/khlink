@@ -1,0 +1,13 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+// Fixtures go to KHLINK_TEST_DIR or the system temp folder, by its long name:
+// the code under test resolves 8.3 short names.
+const FIXTURES = fs.realpathSync.native(process.env.KHLINK_TEST_DIR || require('node:os').tmpdir());
+const m=require('./pin-idb.cjs');
+function database(){const dir=fs.mkdtempSync(path.join(FIXTURES, 'idb-'));fs.writeFileSync(path.join(dir,'CURRENT'),'MANIFEST-000001\n');fs.writeFileSync(path.join(dir,'MANIFEST-000001'),m.fragment(Buffer.concat([Buffer.from([1]),m.vint(8),Buffer.from('idb_cmp1'),Buffer.from([2,3])]),0));fs.writeFileSync(path.join(dir,'000003.log'),Buffer.alloc(0));return dir;}
+function key(index=1){return Buffer.concat([Buffer.from([0,1,1,index,1]),m.vint(m.NAME.length),Buffer.from(m.NAME,'utf16le').swap16()]);}
+test('exact UI record deletion and rollback preserve all previous database bytes',()=>{const dir=database();const entries=[1,2].map(i=>({key:key(i).toString('hex'),value:Buffer.from('synthetic-ui-value').toString('base64')}));m.append(dir,m.snapshot(dir),entries);const before=fs.readFileSync(path.join(dir,'000003.log')),p=m.deletionPlan(dir);m.applyPlan(dir,p);assert.equal(m.snapshot(dir).entries.length,0);m.restorePlan(dir,p);assert.deepEqual(fs.readFileSync(path.join(dir,'000003.log')),before);assert.equal(m.snapshot(dir).entries.length,2);});
+test('partial append is recoverable but later app changes are preserved',()=>{const dir=database();m.append(dir,m.snapshot(dir),[{key:key().toString('hex'),value:Buffer.from('ui').toString('base64')}]);const p=m.deletionPlan(dir),file=path.join(dir,p.name);fs.appendFileSync(file,Buffer.from(p.data,'base64').subarray(0,9));m.restorePlan(dir,p);assert.equal(m.snapshot(dir).entries.length,1);fs.appendFileSync(file,'unexpected');assert.throws(()=>m.restorePlan(dir,p),/preserve newer/);});
+test('CRC, fragmentation and exact key validation reject corrupted or unrelated data',()=>{const payload=Buffer.alloc(70000,42),b=m.fragment(payload,0);assert.deepEqual(m.records(b),[payload]);b[10]^=1;assert.throws(()=>m.records(b),/checksum/);const k=key();assert.equal(m.keyMatch(k),true);k[k.length-1]^=1;assert.equal(m.keyMatch(k),false);assert.equal(m.keyMatch(key(3)),false);});
+test('native Chromium manifest accepts initial log number zero and rejects unknown formats',()=>{const dir=database();fs.writeFileSync(path.join(dir,'MANIFEST-000001'),m.fragment(Buffer.concat([Buffer.from([1,8]),Buffer.from('idb_cmp1')]),0));assert.equal(m.snapshot(dir).max,0);fs.writeFileSync(path.join(dir,'MANIFEST-000001'),m.fragment(Buffer.from([123]),0));assert.throws(()=>m.snapshot(dir),/Unknown/);});
+module.exports={database};

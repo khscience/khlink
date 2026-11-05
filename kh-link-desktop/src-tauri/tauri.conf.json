@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "khLink",
+  "version": "0.1.42",
+  "identifier": "vip.khlink.desktop",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "khLink",
+        "width": 1120,
+        "height": 760,
+        "minWidth": 860,
+        "minHeight": 620,
+        "resizable": true,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "publisher": "KH",
+    "shortDescription": "khLink 桌面连接与设备管理",
+    "longDescription": "khLink 用于安全连接 Windows 上的 Codex 与已绑定的移动设备。",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    },
+    "resources": {
+      "../../ops/claude-switch/": "claude-switch/",
+      "../../ops/codex-switch/": "codex-switch/",
+      "../../fengzhu-connect/src/codex-account-usage.js": "codex-switch/codex-account-usage.js",
+      "../../fengzhu-connect/src/account-identity.js": "codex-switch/account-identity.js",
+      "../../fengzhu-connect/src/backends/claude-desktop-usage.js": "claude-switch/claude-desktop-usage.js",
+      "../../fengzhu-connect/src/backends/claude-usage-cache.js": "claude-switch/claude-usage-cache.js",
+      "../../fengzhu-connect/src/backends/claude-usage-observations.js": "claude-switch/claude-usage-observations.js",
+      "../../fengzhu-connect/src/account-operations.js": "claude-switch/account-operations.js"
+    }
+  }
+}

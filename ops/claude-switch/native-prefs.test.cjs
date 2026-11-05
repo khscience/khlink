@@ -1,0 +1,6 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');
+const {inspect,patch}=require('./native-prefs.cjs');
+function fixture(){return Buffer.from('{\n "mcpServers": {"example":{"env":{"OPAQUE":"keep\\u0041 literal"}}}, "preferences":{"epitaxyPrefs":{"dframe-local-slice":{"pinnedOrder":[]},"dframe-code-sections":{},"starred-local-code-sessions":[],"other":"中文"}},"unknown": [1,true,null] }');}
+test('native UI patch preserves every byte outside the three selected values',()=>{const b=fixture(),v=[{pinnedOrder:['code:local_example']},{test:{}},['local_example']],n=patch(b,v);assert.deepEqual(inspect(n).values,v);assert.ok(n.includes(Buffer.from('"OPAQUE":"keep\\u0041 literal"')));assert.ok(n.includes(Buffer.from('"unknown": [1,true,null]')));assert.ok(n.includes(Buffer.from('"other":"中文"')));assert.equal(patch(n,inspect(b).values).toString(),b.toString());});
+test('unknown, duplicate or malformed native structures fail before writing',()=>{assert.throws(()=>inspect(Buffer.from('{}')),/not initialized/);assert.throws(()=>inspect(Buffer.from('{"a":1,"a":2}')),/Duplicate/);assert.throws(()=>inspect(Buffer.from('{"a":')));assert.throws(()=>inspect(Buffer.from('{} trailing')));});

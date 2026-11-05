@@ -1,0 +1,9 @@
+[Unit]
+Description=Backup Fengzhu Codex encrypted metadata
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/fengzhu-agent-bridge/ops/backup.sh
+TimeoutStartSec=30min
+Nice=10
+IOSchedulingClass=idle

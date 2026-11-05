@@ -1,0 +1,4 @@
+# Link the MSVC runtime statically: a clean Windows has no VCRUNTIME140.dll,
+# and the desktop console failed to start there (found in Windows Sandbox).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

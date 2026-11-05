@@ -1,0 +1,7 @@
+<resources>
+    <color name="brand_ink">#20242B</color>
+    <color name="brand_teal">#00AFA8</color>
+    <color name="brand_amber">#FFB000</color>
+    <color name="brand_surface">#F4F7FA</color>
+    <color name="ic_launcher_background">#FFFFFF</color>
+</resources>

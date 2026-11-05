@@ -1,0 +1,23 @@
+[Unit]
+Description=Fengzhu Codex encrypted relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fengzhu-bridge
+Group=fengzhu-bridge
+WorkingDirectory=/opt/fengzhu-agent-bridge
+EnvironmentFile=/etc/fengzhu-agent-bridge.env
+ExecStart=/usr/bin/node fengzhu-server/dist/src/main.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/fengzhu-agent-bridge
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

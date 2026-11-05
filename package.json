@@ -1,0 +1,12 @@
+{
+  "name": "fengzhu-agent-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["fengzhu-server", "fengzhu-connect"],
+  "scripts": {
+    "build": "npm run build -w fengzhu-server",
+    "test": "node --test ops/test/*.test.cjs && npm test -w fengzhu-server && npm test -w fengzhu-connect",
+    "check": "npm run test && npm run build"
+  }
+}
+

@@ -1,0 +1,8 @@
+# Signed release files must retain their bytes across platforms.
+releases/update-manifest.sig binary
+releases/update-manifest.json text eol=lf
+releases/update-manifest.sig.b64 text eol=lf
+
+# Linux backup entry points must survive a Windows checkout unchanged.
+ops/backup.sh text eol=lf
+ops/fengzhu-agent-bridge-backup.service text eol=lf

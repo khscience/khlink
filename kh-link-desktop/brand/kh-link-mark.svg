@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">khLink</title>
+  <desc id="desc">Orange and black linked mark for khLink</desc>
+  <rect width="512" height="512" rx="112" fill="#111111"/>
+  <path d="M111 171c0-32 26-58 58-58h77c32 0 58 26 58 58v28h-51v-22c0-8-6-14-14-14h-62c-8 0-14 6-14 14v140c0 8 6 14 14 14h62c8 0 14-6 14-14v-22h51v28c0 32-26 58-58 58h-77c-32 0-58-26-58-58z" fill="#f15a24"/>
+  <path d="M266 171c0-32 26-58 58-58h77c32 0 58 26 58 58v28h-51v-22c0-8-6-14-14-14h-62c-8 0-14 6-14 14v140c0 8 6 14 14 14h62c8 0 14-6 14-14v-22h51v28c0 32-26 58-58 58h-77c-32 0-58-26-58-58z" fill="#f6eee4"/>
+  <path d="M186 256h140" stroke="#111111" stroke-width="32" stroke-linecap="round"/>
+  <circle cx="186" cy="256" r="16" fill="#f15a24"/>
+  <circle cx="326" cy="256" r="16" fill="#f6eee4"/>
+</svg>

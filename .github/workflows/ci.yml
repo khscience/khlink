@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    # The connector and the switch tools drive Windows paths and PowerShell.
+    runs-on: windows-latest
+    env:
+      PSExecutionPolicyPreference: Bypass
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Relay and connector tests
+        run: npm test
+      - name: Relay build
+        run: npm run build
+      - name: Desktop console UI tests
+        run: node --test "kh-link-desktop/test/*.test.cjs"
+      - name: Account switch tools
+        working-directory: ops/claude-switch
+        run: |
+          npm ci
+          npm test
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - name: Unit tests and debug build
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon testDebugUnitTest assembleDebug
+
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            kh-link-desktop/src-tauri
+            desktop-adapter
+      - name: Desktop console
+        working-directory: kh-link-desktop/src-tauri
+        run: cargo test
+      - name: Desktop adapter
+        working-directory: desktop-adapter
+        run: cargo test

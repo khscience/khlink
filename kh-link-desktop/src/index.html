@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>khLink</title>
+  <link rel="stylesheet" href="vendor/weui.min.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#app-view">跳到控制台内容</a>
+  <main id="app-view" class="app-shell hidden">
+    <aside class="app-sidebar" aria-label="功能导航">
+      <div class="sidebar-brand"><img src="brand/khlink-blue.png" alt="" width="30" height="30"><strong>kh<span>Link</span></strong><small>桌面工作台</small></div>
+      <p class="nav-caption">工作区</p>
+      <nav class="workspace-nav">
+        <button id="nav-remote" class="nav-item" data-page="remote" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M10 18h4M10 5h4"/></svg><span>手机远程控制</span></button>
+        <button id="nav-accounts" class="nav-item nav-group" aria-expanded="true" aria-controls="account-navigation"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2M2 8l2-2M20 6l2 2"/></svg><span>账号切换</span><span class="nav-chevron" aria-hidden="true">⌄</span></button>
+        <div id="account-navigation" class="nav-children">
+          <button id="nav-claude" class="nav-item nav-child" data-page="claude"><span class="nav-agent claude-agent" aria-hidden="true">✳</span><span>Claude 切换</span></button>
+          <button id="nav-codex" class="nav-item nav-child" data-page="codex"><span class="nav-agent codex-agent" aria-hidden="true">⌘</span><span>Codex 切换</span></button>
+        </div>
+      </nav>
+      <div class="sidebar-spacer"></div>
+      <div class="sidebar-status"><span id="connector-dot" class="status-dot"></span><span id="connector-title">读取连接状态</span></div>
+      <button id="account-button" class="sidebar-account" title="账户与设置" aria-label="账户与设置"><span id="avatar" class="account-avatar">KH</span><span class="sidebar-account-copy"><strong id="nav-account-name">账户与设置</strong><small>管理账户与设置</small></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>
+      <div class="sidebar-version">khLink <span id="desktop-version"></span></div>
+    </aside>
+    <div class="workspace">
+    <header class="app-header">
+      <div class="page-context"><span class="breadcrumb"><span id="page-group">工作区</span> <i>/</i></span><strong id="page-title">手机远程控制</strong></div>
+      <div class="header-actions"><span class="desktop-label">Windows 桌面</span><button id="header-login-button" class="secondary">登录 khLink</button></div>
+    </header>
+
+    <section id="remote-view" class="dashboard">
+      <section id="connection-strip" class="connection-strip" aria-live="polite">
+        <div>
+          <p id="connection-mode-label" class="eyebrow">账户连接</p>
+          <h1 id="connection-heading">电脑连接器</h1>
+          <p id="connector-detail">正在读取本机连接状态</p>
+        </div>
+        <button id="refresh-button" class="secondary weui-btn weui-btn_default">重新连接</button>
+      </section>
+
+      <div class="dashboard-grid">
+        <section id="devices-panel" class="panel weui-panel devices-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">手机连接</p><h2 id="devices-heading">选择连接方式</h2></div>
+            <span id="device-count" class="quiet-badge weui-badge" aria-live="polite">读取中</span>
+          </div>
+          <div class="connection-modes" role="group" aria-label="连接方式">
+            <button id="account-mode-button" class="mode-option" aria-pressed="true"><strong>账户连接</strong><span>两端登录同一账户</span></button>
+            <button id="direct-button" class="mode-option" aria-pressed="false"><strong>二维码直连</strong><span>无需账户，设备直接通信</span></button>
+          </div>
+          <p id="device-hint" class="device-hint">电脑和手机使用同一 khLink 账号登录。</p>
+          <div id="device-list" class="device-list weui-cells"></div>
+          <div id="account-pairing-action" class="pairing-action">
+            <div><strong>扫码绑定手机</strong><span>也可用账户配对码添加设备</span></div>
+            <button id="pair-button" class="secondary">账户配对码</button>
+          </div>
+          <div id="direct-device-actions" class="pairing-action hidden">
+            <button id="direct-repair-button" class="primary">配对手机</button>
+            <button id="direct-server-button" class="secondary">使用账户连接</button>
+          </div>
+        </section>
+
+        <div class="side-stack">
+          <section class="panel weui-panel membership-panel">
+            <div class="panel-heading compact">
+              <div><p class="eyebrow">账户</p><h2 id="account-summary-name">未登录账户</h2></div>
+              <span id="effective-badge" class="badge weui-badge">核验中</span>
+            </div>
+            <p id="account-summary-detail" class="subtle">账户连接需要登录；二维码直连可直接使用。</p>
+            <button id="account-connect-button" class="primary wide">登录 khLink 账号</button>
+            <div id="membership-details" class="hidden">
+            <div class="membership-row">
+              <div><span>khQuant VIP</span><strong id="khquant-state">未获取</strong></div>
+              <p id="khquant-expiry">统一账户自动包含</p>
+            </div>
+            <div class="membership-row">
+              <div><span>khLink VIP</span><strong id="khlink-state">未开通</strong></div>
+              <p id="khlink-expiry">可独立开通</p>
+            </div>
+            </div>
+          </section>
+
+          <section class="panel weui-panel runtime-panel">
+            <div class="panel-heading compact"><div><p class="eyebrow">本机状态</p><h2>连接与后台运行</h2></div></div>
+            <div class="runtime-row"><span>连接方式</span><strong id="transport-diagnostic">读取中</strong></div>
+            <div class="runtime-row"><span>账户服务</span><strong id="relay-diagnostic">待检查</strong></div>
+            <div class="runtime-row"><span>电脑连接器</span><strong id="connector-diagnostic">待检查</strong></div>
+            <div class="runtime-row"><span>软件更新</span><button id="check-updates-button" class="link weui-btn_reset" type="button">检查更新</button></div>
+            <div id="update-row" class="runtime-row hidden"><span id="update-label">有新版本</span><button id="update-button" class="link weui-btn_reset" type="button">更新</button></div>
+            <ul id="update-notes" class="update-notes hidden"></ul>
+            <div class="runtime-row"><span>开机启动</span><label class="switch"><input id="autostart-toggle" type="checkbox"><span></span></label></div>
+          </section>
+
+          <section class="panel weui-panel usage-dashboard-panel">
+            <div class="panel-heading compact">
+              <div><p class="eyebrow">CODEX USAGE</p><h2>Token 用量</h2></div>
+              <span id="usage-updated-dashboard" class="subtle">读取中</span>
+            </div>
+            <div class="usage-dashboard-total"><strong id="dashboard-usage-total">0</strong><span>本机累计 token</span></div>
+            <div class="usage-grid usage-dashboard-grid">
+              <span>输入 <b id="dashboard-usage-input">0</b></span>
+              <span>输出 <b id="dashboard-usage-output">0</b></span>
+              <span>推理 <b id="dashboard-usage-reasoning">0</b></span>
+              <span>缓存 <b id="dashboard-usage-cache">0</b></span>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <footer class="app-footer">
+        <span><b id="server-label">账户连接</b> · 桌面端 <span id="desktop-version-footer"></span></span>
+        <div>
+          <button id="diagnostics-button" class="link weui-btn_reset">连接诊断</button>
+          <button class="link weui-btn_reset" data-url="https://khsci.com/khlink/legal">隐私</button>
+        </div>
+      </footer>
+    </section>
+    <section id="claude-view" class="claude-view hidden" aria-labelledby="claude-title">
+      <div class="page-intro">
+        <div><p class="eyebrow">CLAUDE DESKTOP</p><h1 id="claude-title">切换账号，接着工作。</h1><p>Code 会话、置顶和排列顺序，在账号之间保持一致。</p><p class="subtle switch-hint">切换会正常退出 Claude，请先保存手头的工作。</p></div>
+        <div class="page-actions"><button id="claude-refresh" class="secondary icon-text" title="重新读取本地用量记录"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6a8 8 0 0 1 13.6 4M4.3 14A8 8 0 0 0 18 18"/></svg>更新记录</button><button id="claude-add" class="primary">＋ 添加账号</button></div>
+      </div>
+      <div id="claude-operation" class="operation-banner hidden" role="status" aria-live="polite"><span class="operation-indicator"></span><span id="claude-operation-text"></span><span id="claude-recovery"></span></div>
+      <div class="account-list-heading"><h2>我的账号 <span id="claude-count">—</span></h2><span id="claude-observation-note">只读取官方程序的本地记录</span></div>
+      <div id="claude-accounts" class="claude-accounts" aria-live="polite"><div class="empty-state">正在读取本地账号…</div></div>
+      <details id="claude-removed" class="removed-accounts hidden"><summary>已移除账号 <span id="claude-removed-count">0</span></summary><p class="subtle">数据仍保存在本机，可以重新加入管理列表。</p><div id="claude-removed-list"></div></details>
+      <section class="sharing-panel" aria-labelledby="sharing-title">
+        <div class="sharing-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16l-4-4M20 17H4l4 4"/><path d="M20 7v4M4 17v-4"/></svg></div>
+        <div class="sharing-copy"><h3 id="sharing-title">同一份 Code 工作区</h3><p id="claude-sharing-status">切换时同步会话、置顶和排列顺序。</p><p class="subtle">账号登录各自保留，Chat 与定时任务各自独立。</p></div>
+        <span class="local-badge">仅存本机</span>
+      </section>
+      <details class="usage-explainer">
+        <summary>这些额度数字从哪里来？</summary>
+        <p>读取官方 Claude Desktop 已保存的用量响应与历史记录，或 Claude Code 官方状态栏交出的数据。这里的“更新记录”只重新读取本机，不向 Claude 发送消息或查询请求。</p>
+        <p>未使用的账号到达已记录的重置时间后，显示“预计剩余 100% · 待官方确认”，保留原数据时间。若在其他设备使用，实际额度可能更少；切回后以新官方记录为准，不推算下一次重置时间。</p>
+        <p>其余记录超过 30 分钟、或当前账号已到重置时间，会标为历史数据。没有官方记录或重置时间时不预测，显示“暂无记录”或“官方记录未提供”。</p>
+      </details>
+      <footer class="claude-footer"><span id="claude-data-location">本地账号数据</span><span id="claude-app-version"></span></footer>
+    </section>
+    <section id="codex-view" class="claude-view codex-view hidden" aria-labelledby="codex-title">
+      <div class="page-intro">
+        <div><p class="eyebrow">CODEX DESKTOP</p><h1 id="codex-title">多个账号，各自保持登录。</h1><p>一键打开或切到对应的官方窗口，正在执行的任务继续运行。</p></div>
+        <div class="page-actions"><button id="codex-refresh" class="secondary">更新用量</button><button id="codex-add" class="primary">＋ 添加账号</button></div>
+      </div>
+      <div id="codex-operation" class="operation-banner hidden" role="status" aria-live="polite"><span class="operation-indicator"></span><span id="codex-operation-text"></span></div>
+      <div class="account-list-heading"><h2>我的账号 <span id="codex-count">—</span></h2><span>首次登录由你在官方窗口完成</span></div>
+      <div id="codex-accounts" class="claude-accounts" aria-live="polite"><div class="empty-state">正在读取账号记录…</div></div>
+      <details id="codex-removed" class="removed-accounts hidden"><summary>已移除账号 <span id="codex-removed-count">0</span></summary><p class="subtle">数据仍保存在本机，可以重新加入管理列表。</p><div id="codex-removed-list"></div></details>
+      <section class="sharing-panel">
+        <div class="sharing-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 21h8M12 16v5"/></svg></div>
+        <div class="sharing-copy"><h3>官方窗口，独立账号</h3><p>默认账号保留原有聊天。新增账号的聊天、置顶与登录状态各自独立。</p><p class="subtle">手机远程控制仍使用默认 Codex 账号；在这里切换窗口不会改变手机的连接。</p></div>
+        <span class="local-badge">仅存本机</span>
+      </section>
+      <details class="usage-explainer"><summary>登录、切换与额度说明</summary><p>添加账号后会打开一个空的官方 Codex 窗口，请在其中完成登录。下次点击“切到窗口”或“打开账号”即可继续使用；旧窗口保持运行，需要时可自行退出。</p><p>额度由官方 Codex 账号接口返回。只更新最近从这里打开的账号，其他账号保留上次读取时间；没有数据时显示“暂无记录”，超过 30 分钟或重置时间后显示历史值。登录后可点击“更新用量”。</p><p>khLink 不读取、复制或输出登录文件，不发送模型消息。账号数据保存在 G 盘；本页的备注名称仅用于你自己辨认。</p></details>
+      <footer class="claude-footer"><span id="codex-data-location">本地账号数据</span><span id="codex-app-version"></span></footer>
+    </section>
+    </div>
+  </main>
+
+  <div id="account-sheet" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="account-name">
+    <section class="sheet">
+      <button class="close-button" data-close="account-sheet" aria-label="关闭">×</button>
+      <div class="account-profile"><div id="sheet-avatar" class="avatar-large">kh</div><div><h3 id="account-name">khLink 用户</h3><p id="account-subject">khLink 账号</p></div></div>
+      <p id="sheet-account-status" class="subtle"></p>
+      <button id="sheet-login-button" class="primary wide">登录 khLink 账号</button>
+      <button id="sheet-account-connect" class="secondary wide hidden">使用账户连接</button>
+      <div class="sheet-actions">
+        <button class="weui-btn_reset" data-url="https://khsci.com/khlink/account">管理 khLink 账号</button>
+        <button class="weui-btn_reset" data-url="https://khsci.com/khlink/account#membership">续费与会员</button>
+        <button id="sheet-devices">已绑定设备</button>
+        <button id="sheet-claude">管理本机 Claude 账号</button>
+        <button id="sheet-codex">管理本机 Codex 账号</button>
+        <button class="weui-btn_reset" data-url="https://khsci.com/khlink/support">联系支持</button>
+        <label class="sheet-toggle"><span>开机自动运行</span><span class="switch"><input id="sheet-autostart-toggle" type="checkbox"><span></span></span></label>
+      </div>
+      <button id="logout-button" class="danger-button weui-btn weui-btn_warn">退出桌面账户</button>
+      <p id="logout-note" class="subtle"></p>
+    </section>
+  </div>
+
+  <div id="login-view" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="login-title">
+    <section class="login-panel">
+      <button id="login-close" class="close-button" aria-label="关闭登录">×</button>
+      <img class="brand-mark" src="brand/khlink-blue.png" alt="khLink" width="68" height="68">
+      <h2 id="login-title">登录 khLink 账号</h2>
+      <p class="lede">电脑和手机登录同一账户，即可通过账户服务连接。</p>
+      <p id="login-mode-note" class="subtle hidden">登录成功后切换为账户连接，结束当前直连。</p>
+      <button id="login-button" class="primary wide">在浏览器中登录</button>
+      <p id="login-status" class="subtle" role="status">账号密码只在 khsci.com 网页上填写。</p>
+      <button id="login-cancel" class="link wide">取消</button>
+      <div class="legal-links">
+        <button class="link" data-url="https://khsci.com/khlink/legal">用户协议</button>
+        <button class="link" data-url="https://khsci.com/khlink/legal">隐私政策</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="pairing-dialog" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="pairing-title">
+    <section class="pairing-dialog">
+      <button class="close-button" data-close="pairing-dialog" aria-label="关闭">×</button>
+      <p class="eyebrow">账户连接</p><h3 id="pairing-title">扫描账户配对码绑定手机</h3>
+      <p class="subtle">此配对码通过账户服务绑定设备。</p>
+      <div id="qr-code" class="qr-code" aria-label="khLink 配对二维码"></div>
+      <p id="pairing-countdown" class="countdown">二维码将在 10 分钟后失效</p>
+      <div id="pairing-request" class="pairing-request hidden">
+        <p><strong id="pairing-device">手机</strong> 请求连接</p>
+      <button id="confirm-pairing" class="primary wide weui-btn weui-btn_primary">确认绑定此设备</button>
+      </div>
+      <p id="pairing-status" class="subtle">等待手机扫描</p>
+    </section>
+  </div>
+
+  <div id="diagnostics-dialog" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="diagnostics-title">
+    <section class="sheet diagnostics-dialog">
+      <button class="close-button" data-close="diagnostics-dialog" aria-label="关闭">×</button>
+      <p class="eyebrow">OBSERVABILITY</p><h3 id="diagnostics-title">连接诊断与用量</h3>
+      <div class="diagnostic-summary"><div><strong id="diagnostic-current">读取中</strong><small id="diagnostic-version">连接器状态</small></div><span id="diagnostic-threads" class="quiet-badge weui-badge">0 个活动任务</span></div>
+      <div id="diagnostic-checks" class="diagnostic-checks"></div>
+      <div class="usage-card"><div><p class="eyebrow">CODEX USAGE</p><strong id="usage-total">0</strong><small>本机累计 token（估算）</small></div><div class="usage-grid"><span>输入 <b id="usage-input">0</b></span><span>输出 <b id="usage-output">0</b></span><span>推理 <b id="usage-reasoning">0</b></span><span>缓存 <b id="usage-cache">0</b></span><span id="usage-sessions">0 个会话</span></div></div>
+      <p class="subtle usage-note">用量来自本机 Codex 会话记录，不包含消息内容、密钥，也不等同于账单。</p>
+      <div class="diagnostic-log-heading"><strong>最近连接事件</strong><div><button id="diagnostic-refresh" class="secondary small weui-btn weui-btn_default">重新检查</button><button id="diagnostic-clear" class="link weui-btn_reset">清空日志</button></div></div>
+      <div id="diagnostic-log" class="diagnostic-log"></div>
+    </section>
+  </div>
+
+  <div id="direct-dialog" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="direct-title">
+    <section class="direct-dialog">
+      <button id="direct-close" class="close-button" aria-label="关闭">×</button>
+      <h3 id="direct-title">二维码直连</h3>
+      <p id="direct-mode-note" class="subtle">手机扫码后自动连接，完成认证前保留当前账户连接。</p>
+      <ol class="direct-steps" aria-label="直连步骤"><li id="direct-step-1">1. 手机扫码</li><li id="direct-step-2">2. 自动连接</li><li id="direct-step-3">3. 连接完成</li></ol>
+      <label class="direct-option"><input id="direct-stun" type="checkbox"> 手机和电脑不在同一 Wi-Fi／热点</label>
+      <p class="subtle direct-network-note">不在同一网络时经 Cloudflare 临时通道转发：内容端到端加密，不经过 khLink 服务器，也不暴露电脑的公网地址。</p>
+      <p class="subtle direct-network-note">电脑已登录账户时，直连期间账户连接在后台待命，只保持在线、不同步内容；直连连不上时，手机改用账号登录即可经服务器连回。</p>
+      <div class="direct-columns">
+        <div><h4>手机扫描电脑连接码</h4><div id="direct-qr" class="direct-qr"><span class="subtle">点击下方按钮生成连接码</span></div><p id="direct-countdown" class="subtle"></p><button id="direct-generate" class="primary wide">生成电脑连接码</button></div>
+        <div class="direct-answer-panel">
+          <h4>手机一扫，自动连接</h4>
+          <p class="subtle">打开手机 khLink，扫描左侧二维码。手机会自动完成握手，连接成功后两端显示在线。</p>
+          <p class="subtle">同一 Wi-Fi／热点可完全离线连接。请使用手机端 0.1.189 或更新版本。</p>
+          <details id="direct-advanced"><summary>无法扫码时复制连接信息</summary>
+          <button id="direct-copy" class="link wide" disabled>复制电脑连接信息</button>
+          </details>
+        </div>
+      </div>
+      <p id="direct-status" class="subtle" role="status">同一 Wi-Fi／热点可关闭跨网络寻址，完全离线连接。</p>
+      <div class="direct-bottom-actions"><button id="direct-cancel" class="secondary">取消配对</button><button id="direct-done" class="primary hidden">完成</button><button id="direct-disconnect" class="link hidden">断开直连</button></div>
+      <p class="subtle direct-limit">不支持穿透的网络会连接失败；断开或换网后请重新扫码。</p>
+    </section>
+  </div>
+  <div id="claude-name-dialog" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="claude-name-title">
+    <form id="claude-name-form" class="name-dialog"><button type="button" class="close-button" data-close="claude-name-dialog" aria-label="关闭">×</button><p class="eyebrow">本地备注</p><h2 id="claude-name-title">给账号起个名字</h2><p class="subtle">方便区分，不会更改 Claude 账户资料。</p><label for="claude-name-input">账号名称</label><input id="claude-name-input" maxlength="32" required autocomplete="off"><div class="dialog-actions"><button type="button" class="secondary" data-close="claude-name-dialog">取消</button><button id="claude-name-save" type="submit" class="primary">保存名称</button></div></form>
+  </div>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <div id="claude-add-dialog" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="claude-add-title" aria-describedby="claude-add-hint">
+    <form id="claude-add-form" class="name-dialog"><button id="claude-add-close" type="button" class="close-button" aria-label="关闭添加账号">×</button><p class="eyebrow">CLAUDE DESKTOP</p><h2 id="claude-add-title">添加 Claude 账号</h2><p id="claude-add-hint" class="subtle">先创建独立的空账号目录，再由你在官方 Claude 窗口中登录。密码、验证码都只在官方窗口输入。</p><ol class="enrollment-steps"><li>创建账号，填写一个方便辨认的备注。</li><li>保存工作并从托盘正常退出 Claude，点击“打开登录窗口”。Chrome 可保持打开；若有占用，会提示你处理。</li><li>登录后打开 Code 页，再正常退出 Claude，回到这里点击“完成添加”。</li></ol><label for="claude-add-input">账号备注</label><input id="claude-add-input" maxlength="32" required autocomplete="off" placeholder="例如：个人账号、工作账号"><div class="dialog-actions"><button id="claude-add-cancel" type="button" class="secondary">取消</button><button id="claude-add-save" type="submit" class="primary">创建账号</button></div><p id="claude-add-error" class="subtle" role="alert"></p></form>
+  </div>
+  <script src="features.js"></script>
+  <script src="vendor/gsap.min.js"></script>
+  <script src="connection.js"></script>
+  <script src="main.js"></script>
+  <script src="direct.js"></script>
+  <div id="codex-name-dialog" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="codex-name-title">
+    <form id="codex-name-form" class="name-dialog"><button type="button" class="close-button" id="codex-name-close" aria-label="关闭">×</button><p class="eyebrow">CODEX 账号</p><h2 id="codex-name-title">添加账号</h2><p id="codex-name-hint" class="subtle">填写方便辨认的备注，稍后在官方窗口中登录。</p><label for="codex-name-input">账号备注</label><input id="codex-name-input" maxlength="32" required autocomplete="off" placeholder="例如：工作账号"><div class="dialog-actions"><button id="codex-name-cancel" class="secondary" type="button">取消</button><button id="codex-name-save" class="primary" type="submit">添加并打开</button></div><p id="codex-name-error" class="subtle" role="alert"></p></form>
+  </div>
+  <div id="profile-action-dialog" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="profile-action-title" aria-describedby="profile-action-hint">
+    <section class="name-dialog"><button id="profile-action-close" type="button" class="close-button" aria-label="关闭账号管理确认">×</button><p class="eyebrow">账号管理</p><h2 id="profile-action-title">移除账号</h2><p id="profile-action-target" class="profile-action-target"></p><p id="profile-action-hint" class="subtle"></p><div class="dialog-actions"><button id="profile-action-cancel" type="button" class="secondary">取消</button><button id="profile-action-confirm" type="button" class="primary">确认</button></div></section>
+  </div>
+  <script src="profile-management.js"></script>
+  <script src="profiles.js"></script>
+  <script src="codex-profiles.js"></script>
+</body>
+</html>

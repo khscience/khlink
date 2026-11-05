@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "../../ops/claude-switch/": "claude-switch/",
+      "../../ops/codex-switch/": "codex-switch/",
+      "../../fengzhu-connect/src/codex-account-usage.js": "codex-switch/codex-account-usage.js",
+      "../../fengzhu-connect/src/account-identity.js": "codex-switch/account-identity.js",
+      "../../fengzhu-connect/src/backends/claude-desktop-usage.js": "claude-switch/claude-desktop-usage.js",
+      "../../fengzhu-connect/src/backends/claude-usage-cache.js": "claude-switch/claude-usage-cache.js",
+      "../../fengzhu-connect/src/backends/claude-usage-observations.js": "claude-switch/claude-usage-observations.js",
+      "../../fengzhu-connect/src/account-operations.js": "claude-switch/account-operations.js",
+      "../../.build/connector-payload/": "connector/"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "./installer.nsh"
+      }
+    }
+  }
+}

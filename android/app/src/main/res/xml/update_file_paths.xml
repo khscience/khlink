@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="updates" path="updates/" />
+    <!-- Files opened from the computer (text, images, video …), fetched on request. -->
+    <cache-path name="opened" path="opened/" />
+    <!-- Files fetched from the computer, kept until deleted on the 电脑取回的文件 page. -->
+    <files-path name="fetched" path="fetched/" />
+</paths>

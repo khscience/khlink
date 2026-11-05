@@ -1,0 +1,44 @@
+node_modules/
+dist/
+data/
+*.log
+.env
+.secrets/
+*.keystore
+*.jks
+.build/
+android/.gradle/
+android/local.properties
+android/app/build/
+fengzhu-connect/config.local.json
+**/project.private.config.json
+
+# Local release bundles, screenshots, and ADB/debug artifacts.
+releases/*.apk
+releases/*.apk.idsig
+releases/*.exe
+releases/*.tgz
+releases/*.sig
+releases/*.sig.bin
+releases/*.sig.b64
+# The signed update manifest is committed.
+!releases/update-manifest.sig
+!releases/update-manifest.sig.b64
+releases/*.zip
+fengzhu-connect-*.tgz
+test-artifacts/
+current-phone.png
+.codex-release-temp/
+
+# Language/toolchain build trees.
+**/target/
+**/build/
+**/dist/
+**/.next/
+**/out/
+
+# ADB / desktop debugging captures.
+.adb-*
+.tmp*
+.desktop-*.png
+current-image-failure.png
