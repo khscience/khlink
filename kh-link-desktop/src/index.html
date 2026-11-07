@@ -77,7 +77,7 @@
               <div><span>khQuant VIP</span><strong id="khquant-state">未获取</strong></div>
               <p id="khquant-expiry">统一账户自动包含</p>
             </div>
-            <div class="membership-row">
+            <div class="membership-row hidden" id="khlink-row">
               <div><span>khLink VIP</span><strong id="khlink-state">未开通</strong></div>
               <p id="khlink-expiry">可独立开通</p>
             </div>
@@ -97,7 +97,7 @@
 
           <section class="panel weui-panel usage-dashboard-panel">
             <div class="panel-heading compact">
-              <div><p class="eyebrow">CODEX USAGE</p><h2>Token 用量</h2></div>
+              <div><p class="eyebrow">Codex 用量</p><h2>Token 用量</h2></div>
               <span id="usage-updated-dashboard" class="subtle">读取中</span>
             </div>
             <div class="usage-dashboard-total"><strong id="dashboard-usage-total">0</strong><span>本机累计 token</span></div>
@@ -170,7 +170,7 @@
       <button id="sheet-account-connect" class="secondary wide hidden">使用账户连接</button>
       <div class="sheet-actions">
         <button class="weui-btn_reset" data-url="https://khsci.com/khlink/account">管理 khLink 账号</button>
-        <button class="weui-btn_reset" data-url="https://khsci.com/khlink/account#membership">续费与会员</button>
+        <button class="weui-btn_reset" data-url="https://khsci.com/khlink/account#membership">流量说明</button>
         <button id="sheet-devices">已绑定设备</button>
         <button id="sheet-claude">管理本机 Claude 账号</button>
         <button id="sheet-codex">管理本机 Codex 账号</button>
@@ -220,7 +220,7 @@
       <p class="eyebrow">OBSERVABILITY</p><h3 id="diagnostics-title">连接诊断与用量</h3>
       <div class="diagnostic-summary"><div><strong id="diagnostic-current">读取中</strong><small id="diagnostic-version">连接器状态</small></div><span id="diagnostic-threads" class="quiet-badge weui-badge">0 个活动任务</span></div>
       <div id="diagnostic-checks" class="diagnostic-checks"></div>
-      <div class="usage-card"><div><p class="eyebrow">CODEX USAGE</p><strong id="usage-total">0</strong><small>本机累计 token（估算）</small></div><div class="usage-grid"><span>输入 <b id="usage-input">0</b></span><span>输出 <b id="usage-output">0</b></span><span>推理 <b id="usage-reasoning">0</b></span><span>缓存 <b id="usage-cache">0</b></span><span id="usage-sessions">0 个会话</span></div></div>
+      <div class="usage-card"><div><p class="eyebrow">Codex 用量</p><strong id="usage-total">0</strong><small>本机累计 token（估算）</small></div><div class="usage-grid"><span>输入 <b id="usage-input">0</b></span><span>输出 <b id="usage-output">0</b></span><span>推理 <b id="usage-reasoning">0</b></span><span>缓存 <b id="usage-cache">0</b></span><span id="usage-sessions">0 个会话</span></div></div>
       <p class="subtle usage-note">用量来自本机 Codex 会话记录，不包含消息内容、密钥，也不等同于账单。</p>
       <div class="diagnostic-log-heading"><strong>最近连接事件</strong><div><button id="diagnostic-refresh" class="secondary small weui-btn weui-btn_default">重新检查</button><button id="diagnostic-clear" class="link weui-btn_reset">清空日志</button></div></div>
       <div id="diagnostic-log" class="diagnostic-log"></div>

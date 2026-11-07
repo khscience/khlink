@@ -8,7 +8,7 @@ class PairingErrorMessageTest {
     fun membershipFailuresOfferTheMemberCenter() {
         val noMembership = PairingErrorMessage.fromAccountLogin(IllegalStateException("403: {\"message\":\"An active khLink membership is required for phone login\"}"))
         org.junit.Assert.assertTrue(PairingErrorMessage.needsMembership(noMembership))
-        org.junit.Assert.assertTrue(PairingErrorMessage.needsMembership("khLink 会员当前不可用，远程操作已切换为只读。可在“我 → 会员与续费”开通"))
+        org.junit.Assert.assertTrue(PairingErrorMessage.needsMembership("本月免费流量已用完，远程操作暂停到下月 1 日。扫码直连不计流量，可以改用直连"))
         org.junit.Assert.assertFalse(PairingErrorMessage.needsMembership("二维码无效或已过期，请在电脑端重新生成"))
         assertEquals("https://khsci.com/khlink/account#membership", PairingErrorMessage.MEMBERSHIP_URL)
     }
@@ -16,7 +16,7 @@ class PairingErrorMessageTest {
     @Test
     fun distinguishesAccountLoginFailuresFromQrPairingFailures() {
         assertEquals(
-            "手机登录需要有效的 khLink 会员。可以去开通会员，或改用扫码直连（免费）",
+            "本月免费流量已用完，暂时不能在手机登录；下月 1 日恢复，也可以改用扫码直连（不计流量）",
             PairingErrorMessage.fromAccountLogin(IllegalStateException("403: {\"message\":\"An active khLink membership is required for phone login\"}")),
         )
         assertEquals(

@@ -488,6 +488,10 @@ class BridgeRepository(private val context: Context) {
     private val agentSnapshots = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Map<String, Boolean>>>()
     private val _agentOpenStatesByConnector = MutableStateFlow<Map<String, Map<String, Boolean>>>(emptyMap())
     val agentOpenStatesByConnector: StateFlow<Map<String, Map<String, Boolean>>> = _agentOpenStatesByConnector
+    // Which agents each computer has installed at all (connector 0.2.148+);
+    // missing for an older connector, which then shows the old empty list.
+    private val _agentInstalledByConnector = MutableStateFlow<Map<String, Map<String, Boolean>>>(emptyMap())
+    val agentInstalledByConnector: StateFlow<Map<String, Map<String, Boolean>>> = _agentInstalledByConnector
     // One account may have several computers. Each connector's last heartbeat,
     // so the PC switcher can show which computer is online.
     private val _connectorSeenAt = MutableStateFlow<Map<String, Long>>(emptyMap())
@@ -1541,7 +1545,7 @@ class BridgeRepository(private val context: Context) {
     fun disconnect() {
         agentSnapshots.clear()
         _agentOpenStates.value = emptyMap()
-        _agentOpenStatesByConnector.value = emptyMap()
+        _agentOpenStatesByConnector.value = emptyMap(); _agentInstalledByConnector.value = emptyMap()
         directPairing = false
         directResumeJob?.cancel(); directResumeJob = null; directResumeAttempt = 0
         directHeartbeat?.cancel(); directHeartbeat = null
@@ -3173,14 +3177,14 @@ class BridgeRepository(private val context: Context) {
         val key = "traffic_notice_${traffic.month}"
         if (displayPrefs.getInt(key, 0) >= level) return
         displayPrefs.edit().putInt(key, level).apply()
-        _message.value = if (level == 100) "本月免费流量（${formatTraffic(traffic.limitBytes)}）已用完，远程操作暂停；开通会员后立即恢复，直连和自建服务器不受影响"
-            else "本月免费流量已用 ${formatTraffic(traffic.usedBytes)}，共 ${formatTraffic(traffic.limitBytes)}；用完后需开通会员"
+        _message.value = if (level == 100) "本月免费流量（${formatTraffic(traffic.limitBytes)}）已用完，远程操作暂停到下月 1 日；直连和自建服务器不受影响"
+            else "本月免费流量已用 ${formatTraffic(traffic.usedBytes)}，共 ${formatTraffic(traffic.limitBytes)}；用完后远程操作暂停到下月 1 日"
     }
 
     /** Why remote actions are read-only: a used-up free month, or no membership. */
     private fun readOnlyReason(): String = if (_account.value?.traffic?.exhausted == true && _account.value?.effectiveSource == "free")
-        "本月免费流量已用完，远程操作已暂停。开通会员后立即恢复，可在“我 → 会员与续费”开通"
-        else "khLink 会员当前不可用，远程操作已切换为只读。可在“我 → 会员与续费”开通"
+        "本月免费流量已用完，远程操作暂停到下月 1 日。扫码直连不计流量，可以改用直连"
+        else "账户当前不能远程操作，已切换为只读。可以在“我 → 流量说明”查看原因，或改用扫码直连"
 
     private fun ensureSelectedConnector(items: List<DeviceEntry>) {
         val connectors = items.filter { !it.revoked && it.type.equals("connector", true) }
@@ -3202,7 +3206,7 @@ class BridgeRepository(private val context: Context) {
             _threadOwners.value = emptyMap(); _connectorSeenAt.value = emptyMap(); _selectedConnectorId.value = null
             _approval.value = null; _claudeUsage.value = null; _dshUsage.value = null; _pcLoad.value = null; _account.value = null
             _agentAccounts.value = emptyMap(); _accountReadErrors.value = emptyMap(); _accountsAvailable.value = false; _accountRequestPending.value = false
-            _agentOpenStates.value = emptyMap(); _agentOpenStatesByConnector.value = emptyMap(); agentSnapshots.clear()
+            _agentOpenStates.value = emptyMap(); _agentOpenStatesByConnector.value = emptyMap(); _agentInstalledByConnector.value = emptyMap(); agentSnapshots.clear()
             _dshCatalog.value = null; _hermesCatalog.value = null; _dshPending.value = null; _dshPendingLoading.value = false
             _claudeModels.value = emptyList(); _threadSettings.value = emptyMap(); _turnDurations.value = emptyMap()
             _lightDetails.value = emptyMap(); _lightFetching.value = emptySet(); lightDetailsThread = null
@@ -4645,6 +4649,10 @@ class BridgeRepository(private val context: Context) {
     private fun reconcileAgentOpenStates(payload: JSONObject) {
         val agents = payload.optJSONObject("agents") ?: return
         val connectorId = payload.optString("connectorId").takeIf { it.isNotBlank() && it != "null" } ?: return
+        payload.optJSONObject("installed")?.let { installed ->
+            val map = installed.keys().asSequence().mapNotNull { id -> (installed.opt(id) as? Boolean)?.let { id to it } }.toMap()
+            _agentInstalledByConnector.update { it + (connectorId to map) }
+        }
         val at = payload.optLong("sentAt")
         if (at <= 0 || at < (agentSnapshots[connectorId]?.first ?: 0)) return
         val states = HOME_AGENT_IDS.mapNotNull { id -> (agents.opt(id) as? Boolean)?.let { id to it } }.toMap()

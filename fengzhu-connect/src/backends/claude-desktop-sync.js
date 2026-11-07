@@ -1544,6 +1544,14 @@ const methods = {
           result = await runOnce();
         }
       }
+      // A scheduled task's dialog has no "Allow and switch to Auto" (only
+      // "Always allow" for the task, 2026-11-06). Do what was asked in two
+      // steps: allow this request once, then switch the session to Auto below.
+      if (!result.ok && kind === 'permission' && picked === 'allow_auto' && result.reason === 'auto_not_offered') {
+        args[args.indexOf('-Choice') + 1] = 'allow';
+        result = await runOnce();
+        if (result.ok) result.switchModeAfter = true;
+      }
     } finally { for (const file of temp) fs.rm(file, { force: true }, () => {}); }
     if (!result.ok && ['prompt_mismatch', 'request_stale'].includes(result.reason)) {
       const current = this.claudeDesktop?.pendingPrompts?.(Date.now())?.get(meta.desktopId);
@@ -1566,7 +1574,15 @@ const methods = {
       await new Promise((resolve) => setTimeout(resolve, this.answerPollMs ?? 500));
     }
     await this.syncClaudeDesktopSessions?.().catch?.((e) => this.log(e));
-    return { answered: true, kind, choice: kind === 'question' ? undefined : picked };
+    if (result.switchModeAfter) {
+      // After the reply: two script runs and the mode menu together can pass
+      // the phone's 60 s wait. The new mode reaches the phone with the session
+      // sync (thread.settings); a menu that refuses it is only logged.
+      this.setClaudeDesktopPermissionMode(threadId, 'auto')
+        .then(() => this.log(`allow_auto fallback: ${threadId} allowed once and switched to Auto`))
+        .catch((error) => this.log(`allow_auto fallback: ${threadId} allowed once, mode not switched: ${error.message}`));
+    }
+    return { answered: true, kind, choice: kind === 'question' ? undefined : picked, ...(result.switchModeAfter ? { modeSwitch: 'auto' } : {}) };
   },
 
   // ---- sidebar: pin / unpin / rename from the phone ----------------------

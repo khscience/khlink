@@ -39,6 +39,13 @@ for (const [field, reason] of [['staleAfterMenu', 'request_stale'], ['changedAft
     assert.deepEqual(r.invoked, []);
   });
 
+test('desktop permission: a scheduled task menu without Auto is closed and refused by name, nothing clicked', windows, t => {
+  const r = run(t, { choice: 'allow_auto', expand: true, scheduledTask: true });
+  assert.equal(r.reason, 'auto_not_offered');
+  assert.deepEqual(r.invoked, []);
+  assert.equal(r.menuOpen, false);
+});
+
 test('desktop permission: a dialog without an allow menu (an MCP tool) refuses "switch to Auto" by name', windows, t => {
   const auto = run(t, { choice: 'allow_auto', noMenu: true });
   assert.equal(auto.reason, 'auto_not_offered');

@@ -1844,3 +1844,26 @@ test('a card read from the window answers by the button\'s own name and gives wa
   const replaced = connector.claudeWaitingDetail(prior, session, { requestId: 'q1', tool: 'AskUserQuestion' });
   assert.deepEqual(replaced.waitingDetail.questions.map((q) => q.question), ['Page one?', 'Page two?']);
 });
+
+test('"allow and switch to Auto" on a dialog without Auto (a scheduled task): allow once, then switch the mode', async () => {
+  const connector = Object.create(Connector.prototype);
+  connector.log = () => {}; connector.answerPollMs = 1; connector.answerRetryMs = 1;
+  connector.syncClaudeDesktopSessions = async () => {};
+  const desktopId = 'local_00000000-0000-4000-8000-0000000000cc';
+  let pending = new Map([[desktopId, { requestId: 'r1', tool: 'Bash' }]]);
+  connector.claudeDesktop = { pendingPrompts: () => pending, focusedSessionId: () => desktopId };
+  connector.claudeThreads = new Map([['t', { id: 't', desktopId, waitingDetail: { kind: 'permission', tool: 'Bash', summary: 'python check.py', requestId: 'r1' } }]]);
+  const choices = []; const modes = [];
+  connector.execFileFn = (cmd, args, opts, cb) => {
+    const choice = args[args.indexOf('-Choice') + 1]; choices.push(choice);
+    if (choice === 'allow_auto') return cb(null, '{"ok":false,"reason":"auto_not_offered"}');
+    pending = new Map(); cb(null, '{"ok":true}');
+  };
+  connector.setClaudeDesktopPermissionMode = async (threadId, mode) => { modes.push([threadId, mode]); return { applied: true }; };
+  const done = await connector.answerClaudeOnDesktop('t', { requestId: 'r1', choice: 'allow_auto' });
+  assert.deepEqual(choices, ['allow_auto', 'allow']);
+  assert.equal(done.answered, true);
+  assert.equal(done.modeSwitch, 'auto');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(modes, [['t', 'auto']]);
+});

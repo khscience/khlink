@@ -564,7 +564,13 @@ const methods = {
         }
         // One failed poll is not enough to grey the tab: only a definite
         // "no Host" is reported, and ordinary reads stay quiet.
-        if (!this._dshOfflineLogged) { this.log(new Error(`dsh: ${error.message}`)); this._dshOfflineLogged = true; }
+        // A PC without DSH at all is normal, not an error worth a stack trace.
+        if (!this._dshOfflineLogged) {
+          const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+          if (fs.existsSync(home)) this.log(new Error(`dsh: ${error.message}`));
+          else console.log('[fengzhu-connect] DSH not installed; DeepSeek Harness sync idle');
+          this._dshOfflineLogged = true;
+        }
         return;
       }
       this._dshOfflineLogged = false;

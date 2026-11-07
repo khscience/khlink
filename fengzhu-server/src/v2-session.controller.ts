@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, Post, Req, UseGuards } from '@nestjs/common'
+import { BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, Post, Req, UseGuards } from '@nestjs/common'
 import { DatabaseService } from './database.service'
 import { isDeviceKeyEnvelope } from './device-key-envelope'
 import { EntitlementService } from './entitlement.service'
@@ -57,6 +57,16 @@ export class V2SessionController {
     // computer joining an account that already has one waits until a running
     // connector wraps that key to its public key (device-key v3, as for
     // phones), and only then starts its own connector.
+    // Logging out of the desktop app and in with another account keeps the
+    // computer's identity, which still belonged to the first account, so the
+    // login failed with a 500. The same installation (same id and public key)
+    // moves to the new account with its connector; any other claim on the id
+    // is refused.
+    const owner = this.database.findAccountDevice(body.deviceId)
+    if (owner && owner.accountId !== accountId) {
+      if (owner.type !== 'desktop' || owner.publicKey !== body.publicKey) throw new ConflictException('This computer is bound to another account')
+      this.database.releaseDesktop(owner.accountId, body.deviceId)
+    }
     const existing = this.database.getAccountDevice(accountId, body.deviceId)
     const others = this.database.listAccountDevices(accountId).filter((device) => !device.revokedAt
       && (device.type === 'desktop' || device.type === 'connector')

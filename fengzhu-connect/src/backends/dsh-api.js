@@ -115,7 +115,18 @@ class DshClient {
     return { port: bridge.port, pid: bridge.pid, hostVersion: bridge.hostVersion };
   }
 
+  // DSH restarted (new pid or port in the bridge file): the cached host and
+  // cookie point at the old process. On 2026-11-06 DSH came back on another
+  // port and every poll kept asking the old one, so the phone showed DSH
+  // closed until the connector restarted.
+  bridgeMoved() {
+    if (!this.bridge) return false;
+    const now = readBridge(this.bridgeFile);
+    return Boolean(now && (now.port !== this.bridge.port || (now.pid && this.bridge.pid && now.pid !== this.bridge.pid)));
+  }
+
   async call(method, args = {}, { retry = true } = {}) {
+    if (this.online && this.bridgeMoved()) this.cookie = null;
     if (!this.online) await this.connect();
     const body = JSON.stringify({ type: 'client-request', rpcId: `khlink-${Date.now()}-${Math.random().toString(36).slice(2)}`, method, payload: { args } });
     let response;
@@ -137,8 +148,10 @@ class DshClient {
     }
     if (response.status === 404) throw new DshApiError(`DeepSeek Harness 不认识这个操作：${method}`, { code: 'method-not-found', status: 404 });
     let envelope;
-    try { envelope = await response.json(); } catch { throw new DshApiError(`DeepSeek Harness 返回了无法解析的响应（HTTP ${response.status}）`, { code: 'bad-response', status: response.status }); }
-    if (!envelope || envelope.type !== 'server-response') throw new DshApiError('DeepSeek Harness 返回了意外的响应。', { code: 'bad-response', status: response.status });
+    // Not DSH answering (or not this DSH): drop the session so the next call
+    // reads the bridge file and connects again.
+    try { envelope = await response.json(); } catch { this.cookie = null; throw new DshApiError(`DeepSeek Harness 返回了无法解析的响应（HTTP ${response.status}）`, { code: 'bad-response', status: response.status }); }
+    if (!envelope || envelope.type !== 'server-response') { this.cookie = null; throw new DshApiError('DeepSeek Harness 返回了意外的响应。', { code: 'bad-response', status: response.status }); }
     const result = envelope.result || {};
     if (result.ok !== true) {
       const error = result.error || {};

@@ -157,4 +157,29 @@ describe('KH Link v2 account boundary', () => {
       'desktop-a', 'desktop-b', 'desktop-a.connector', 'desktop-b.connector',
     ]))
   })
+  it('moves a computer that logs in with another account, and refuses a foreign claim on its id', async () => {
+    let subject = 'wp-first'
+    const identity = {
+      completeAuthorization: jest.fn(async () => ({
+        profile: { subject, displayName: subject, disabled: false },
+        khQuantMembership: { state: 'active', plan: 'khQuant VIP', expiresAt: Date.now() + 86_400_000 },
+      })),
+    }
+    const auth = new V2AuthService(database)
+    const controller = new V2SessionController(identity as never, database, auth, new EntitlementService(database))
+    const base = { state: 'state', code: 'code', codeVerifier: 'verifier', deviceId: 'pc-1', deviceName: '电脑', publicKey: 'pc-key' }
+    await controller.complete(base)
+    const first = database.upsertAccount({ subject: 'wp-first', displayName: 'wp-first', disabled: false })
+    controller.connectorSession({ accountClaims: { sub: first, deviceId: 'pc-1', type: 'desktop', version: 2, exp: Date.now() + 1000 } } as never, {})
+
+    subject = 'wp-second'
+    await expect(controller.complete({ ...base, publicKey: 'someone-else' })).rejects.toThrow('bound to another account')
+    const moved = await controller.complete(base) as { session: { deviceId: string } }
+    const second = database.upsertAccount({ subject: 'wp-second', displayName: 'wp-second', disabled: false })
+    controller.connectorSession({ accountClaims: { sub: second, deviceId: 'pc-1', type: 'desktop', version: 2, exp: Date.now() + 1000 } } as never, {})
+
+    expect(moved.session.deviceId).toBe('pc-1')
+    expect(database.listAccountDevices(first, true)).toEqual([])
+    expect(database.listAccountDevices(second).map((device) => device.id).sort()).toEqual(['pc-1', 'pc-1.connector'])
+  })
 })

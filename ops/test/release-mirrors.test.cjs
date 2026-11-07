@@ -65,3 +65,13 @@ test('verifies every uploaded asset digest and rejects missing or altered packag
   assert.throws(() => verifyReleaseAssets({ assets }, 'stage', fs, crypto), /digest differs/);
   assert.throws(() => verifyReleaseAssets({ assets: [] }, 'stage', { ...fs, readdirSync: () => [] }, crypto), /No release package/);
 });
+test('links into a release that never went out (a draft) are uploaded again', () => {
+  const before = input();
+  const exe = `https://github.com/${repo}/releases/download/draft/khLink-windows-0.1.27-x64-setup.exe`;
+  before.windowsDesktop.urls = [exe, before.windowsDesktop.url];
+  const kept = planManifest(before, { repo, tag, fileSize: () => 1024, publishedTags: new Set(['draft']) });
+  assert.ok(!kept.assets.some(a => a.asset.endsWith('.exe')));
+  const redone = planManifest(before, { repo, tag, fileSize: () => 1024, publishedTags: new Set(['older']) });
+  assert.ok(redone.assets.some(a => a.asset === 'khLink-windows-0.1.27-x64-setup.exe'));
+  assert.ok(redone.manifest.windowsDesktop.urls.includes(`https://github.com/${repo}/releases/download/${tag}/khLink-windows-0.1.27-x64-setup.exe`));
+});

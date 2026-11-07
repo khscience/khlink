@@ -5,14 +5,14 @@ object PairingErrorMessage {
     const val MEMBERSHIP_URL = "https://khsci.com/khlink/account#membership"
 
     /** Failures a membership fixes: the screen then offers a way to open one. */
-    fun needsMembership(message: String): Boolean = message.contains("khLink 会员")
+    fun needsMembership(message: String): Boolean = message.contains("免费流量已用完")
 
     /** Account login does not use a pairing QR; keep its failures distinct. */
     fun fromAccountLogin(error: Throwable): String {
         val message = error.message.orEmpty()
         return when {
             message.contains("active khLink membership is required for phone login", ignoreCase = true) ->
-                "手机登录需要有效的 khLink 会员。可以去开通会员，或改用扫码直连（免费）"
+                "本月免费流量已用完，暂时不能在手机登录；下月 1 日恢复，也可以改用扫码直连（不计流量）"
             message.contains("not allowed to use phone login", ignoreCase = true) ->
                 "此账号暂未获准在手机登录，请联系管理员"
             message.contains("khLink account is disabled", ignoreCase = true) ->

@@ -380,6 +380,12 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       WHERE account_id=? AND id=? AND revoked_at IS NULL AND refresh_hash IS NOT NULL`).run(expiresAt, Date.now(), accountId, deviceId)
   }
 
+  // A computer that signed in to another account leaves its previous one:
+  // the desktop row and its connector row go, with their refresh tokens.
+  releaseDesktop(accountId: string, deviceId: string): void {
+    this.db.prepare('DELETE FROM account_devices_v2 WHERE account_id=? AND id IN (?,?)').run(accountId, deviceId, `${deviceId}.connector`)
+  }
+
   revokeAccountDevice(accountId: string, deviceId: string): void {
     this.db.prepare(`UPDATE account_devices_v2 SET revoked_at=?,refresh_hash=NULL,refresh_expires_at=NULL
       WHERE account_id=? AND id=?`).run(Date.now(), accountId, deviceId)

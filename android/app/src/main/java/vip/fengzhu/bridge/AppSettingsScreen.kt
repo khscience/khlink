@@ -124,20 +124,21 @@ internal fun AppSettingsScreen(
                                 // links and self-hosted servers are never counted.
                                 val traffic = account?.traffic
                                 if (v2 && !directMode && traffic != null) TrafficCard(traffic, member = account.effectiveSource != "free")
-                                if (v2 && !directMode && account != null && !account.canWrite) {
-                                    Button({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PairingErrorMessage.MEMBERSHIP_URL))) }, Modifier.fillMaxWidth().padding(top = 12.dp)) {
-                                        Text("去开通会员")
-                                    }
-                                }
                                 if (v2 && !directMode) {
                                     TextButton({ membershipDetails = !membershipDetails }, Modifier.fillMaxWidth()) {
                                         Text(if (membershipDetails) "收起会员详情" else "查看会员详情", Modifier.weight(1f))
                                         Icon(if (membershipDetails) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
                                     }
                                     if (membershipDetails) {
+                                        // khLink is free (2026-11-06): no khLink VIP is sold, so
+                                        // its line shows only for an account that still has one.
                                         listOf("khquant" to "khQuant VIP", "kh_link" to "khLink VIP").forEach { (product, name) ->
                                             val membership = account?.memberships?.firstOrNull { it.product == product }
-                                            MembershipLine(name, membershipStateLabel(membership?.state.orEmpty()), membershipExpiry(membership?.expiresAt))
+                                            if (product == "kh_link" && membership == null) return@forEach
+                                            // A new account never had khQuant VIP, yet the site reports
+                                            // "expired" without an end date: that is "未开通".
+                                            val state = membership?.state.orEmpty().takeUnless { it == "expired" && (membership?.expiresAt ?: 0L) <= 0L }.orEmpty()
+                                            MembershipLine(name, membershipStateLabel(state), membershipExpiry(membership?.expiresAt))
                                         }
                                     }
                                 }
@@ -197,7 +198,7 @@ internal fun AppSettingsScreen(
                             if (directMode) { SettingsDivider(); SettingsEntry(Icons.Default.Autorenew, "返回账户连接", "恢复之前保存的账户会话", restoreServer) }
                             if (v2 && !directMode) {
                                 SettingsDivider()
-                                SettingsEntry(Icons.Default.Autorenew, "会员与续费", "在官网会员中心开通或续费 khLink 会员") {
+                                SettingsEntry(Icons.Default.Autorenew, "流量说明", "官方服务器每月免费流量，khQuant VIP 不限") {
                                     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PairingErrorMessage.MEMBERSHIP_URL)))
                                 }
                             }
@@ -289,7 +290,10 @@ internal fun claudeStatuslineSummary(state: ClaudeStatuslineState): String = whe
 /** This month's traffic through the official server, and what happens at the limit. */
 @Composable
 private fun TrafficCard(traffic: TrafficUsage, member: Boolean) {
-    val resets = java.text.SimpleDateFormat("M 月 d 日", java.util.Locale.CHINA).format(java.util.Date(traffic.resetsAt))
+    // The quota month is a Beijing-time calendar month: format the reset in
+    // that zone, or a phone set to UTC shows the 30th instead of the 1st.
+    val resets = java.text.SimpleDateFormat("M 月 d 日", java.util.Locale.CHINA)
+        .apply { timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai") }.format(java.util.Date(traffic.resetsAt))
     Column(Modifier.fillMaxWidth().padding(top = 14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("本月流量", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
@@ -300,8 +304,8 @@ private fun TrafficCard(traffic: TrafficUsage, member: Boolean) {
         if (!member && traffic.free) LinearProgressIndicator(progress = { traffic.fraction }, Modifier.fillMaxWidth(),
             color = if (traffic.exhausted || traffic.fraction >= 0.8f) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
         Text(when {
-            member -> "会员不限流量。只统计经官方服务器的数据，直连和自建服务器不计。"
-            traffic.exhausted -> "本月免费流量已用完，远程操作已暂停；开通会员后立即恢复，$resets 重新计算。直连和自建服务器不受影响。"
+            member -> "khQuant VIP 不限流量。只统计经官方服务器的数据，直连和自建服务器不计。"
+            traffic.exhausted -> "本月免费流量已用完，远程操作已暂停，$resets 恢复。直连和自建服务器不受影响。"
             else -> "官方服务器每月免费 ${formatTraffic(traffic.limitBytes)}，$resets 重新计算；直连和自建服务器不计流量。"
         }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }

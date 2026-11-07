@@ -341,10 +341,15 @@ async function loadAccount({ retry = true } = {}) {
     const entries = Object.fromEntries((accountData.entitlements || []).map((item) => [item.product, item]));
     const quant = entries.khquant || {};
     const link = entries.kh_link || {};
-    $('khquant-state').textContent = stateLabel(quant.state);
-    $('khquant-expiry').textContent = expiryLabel(quant.expiresAt, '有效会员自动包含 khLink');
-    $('khlink-state').textContent = stateLabel(link.state);
-    $('khlink-expiry').textContent = expiryLabel(link.expiresAt, '可使用同一账户单独开通');
+    // A new account never had khQuant VIP, yet the site reports "expired" with
+    // no end date: that is "未开通", not "已到期".
+    $('khquant-state').textContent = stateLabel(quant.state === 'expired' && !quant.expiresAt ? '' : quant.state);
+    $('khquant-expiry').textContent = expiryLabel(quant.expiresAt, '会员不限 khLink 流量');
+    $('khlink-state').textContent = stateLabel(link.state === 'expired' && !link.expiresAt ? '' : link.state);
+    $('khlink-expiry').textContent = expiryLabel(link.expiresAt, '');
+    // khLink is free (2026-11-06) and its VIP is no longer sold: the row shows
+    // only for an account that still holds one.
+    $('khlink-row').classList.toggle('hidden', !link.state);
     const effective = accountData.effectiveEntitlement || {};
     $('effective-badge').textContent = effective.canWrite ? `khLink 可用 · ${sourceLabel(effective.source)}` : '当前只读';
     $('effective-badge').classList.toggle('inactive', !effective.canWrite);
@@ -380,7 +385,7 @@ async function loadAccount({ retry = true } = {}) {
 }
 
 function sourceLabel(source) {
-  return ({ khquant: 'khQuant VIP', kh_link: 'khLink VIP', combined: '双重权益' })[source] || '无有效权益';
+  return ({ khquant: 'khQuant VIP', kh_link: 'khLink VIP', combined: '双重权益' })[source] || '免费额度';
 }
 
 function setDeviceText(element, value) {
@@ -488,6 +493,10 @@ function renderUsage(usageData) {
   const updated = Number(values.updatedAt || 0);
   const label = updated ? `更新于 ${new Date(updated).toLocaleTimeString('zh-CN', { hour12: false })}` : '暂无数据';
   if ($('usage-updated-dashboard')) $('usage-updated-dashboard').textContent = label;
+  // No Codex session on this PC (Codex not installed or never used): the
+  // usage cards would only show zeros, so leave them out.
+  const none = usageData && Number(values.updatedAt || 0) > 0 && !Number(values.sessionCount || 0);
+  document.querySelectorAll('.usage-dashboard-panel, .usage-card, .usage-note').forEach((el) => el.classList.toggle('hidden', none));
 }
 
 // Returning from the tray or another window should not leave a six-hour-old

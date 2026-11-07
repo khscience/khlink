@@ -191,6 +191,8 @@ import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.Typography
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -402,7 +404,7 @@ private fun DirectAccountSuggestionDialog(useAccount: () -> Unit, keepWaiting: (
         title = { Text("直连一直连不上") },
         text = {
             Text("已经重试了好几次，还是连不上电脑。可能是电脑重启过、换了网络，或者当前网络不支持直连。\n\n" +
-                "建议改用 khLink 账号登录，通过官方服务器中继连接，在哪儿都能连上，更稳定。每月有 100 MB 免费流量，会员不限。")
+                "建议改用 khLink 账号登录，通过官方服务器中继连接，在哪儿都能连上，更稳定。每月有免费流量，khQuant VIP 不限。")
         },
         confirmButton = { TextButton(useAccount) { Text("用账号登录", color = Accent, fontWeight = FontWeight.SemiBold) } },
         dismissButton = { TextButton(keepWaiting) { Text("继续等待直连") } },
@@ -512,12 +514,55 @@ private fun OnboardingTheme(tryIt: () -> Unit) {
             }
         }
     }
+    // A sample conversation in the picked theme, so the choice shows at once
+    // (a new account has no conversations of its own to look at yet).
+    ThemePreviewChat()
     // The real app, not a drawing of it: the home list and any conversation,
     // in whichever theme is picked on the bar at the bottom.
     OutlinedButton(tryIt, Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, Accent)) {
         Text("看看实际效果", color = Accent, fontWeight = FontWeight.SemiBold)
     }
-    Text("会打开真实的首页，也可以点进对话看看；底部可以切换主题，看完点“回到引导”。", color = Muted, style = MaterialTheme.typography.bodySmall)
+    Text("会打开真实的首页，也可以点进对话看看；底部可以切换主题，看完点“完成”。", color = Muted, style = MaterialTheme.typography.bodySmall)
+}
+
+@Composable
+private fun ThemePreviewChat() {
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = P.paper, border = BorderStroke(1.dp, P.divider)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("效果预览", color = P.muted, style = MaterialTheme.typography.labelMedium)
+            // A row of the conversation list, with a running task.
+            Surface(shape = RoundedCornerShape(12.dp), color = P.runningContainer, border = BorderStroke(1.dp, P.runningBorder)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("整理周末出游计划", color = P.ink, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                        Text("正在查看天气和路线…", color = P.muted, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Surface(shape = RoundedCornerShape(50), color = P.runningChip) {
+                        Text("运行中", Modifier.padding(horizontal = 8.dp, vertical = 3.dp), color = P.runningInk, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+            // A short exchange inside a conversation.
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Surface(shape = RoundedCornerShape(14.dp, 4.dp, 14.dp, 14.dp), color = P.userBubble) {
+                    Text("周六想去爬山，帮我看看天气", Modifier.padding(horizontal = 12.dp, vertical = 8.dp), color = P.ink, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            Row(Modifier.fillMaxWidth()) {
+                Surface(Modifier.fillMaxWidth(0.85f), shape = RoundedCornerShape(4.dp, 14.dp, 14.dp, 14.dp), color = P.surface, border = BorderStroke(0.5.dp, P.divider)) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Text("周六晴，最高 22℃，适合爬山。", color = P.ink, style = MaterialTheme.typography.bodyMedium)
+                        Text("建议早上八点前出发，带一件薄外套。", color = P.ink, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Surface(shape = RoundedCornerShape(14.dp, 4.dp, 14.dp, 14.dp), color = P.userBubble) {
+                    Text("好，那就定周六", Modifier.padding(horizontal = 12.dp, vertical = 8.dp), color = P.ink, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
 }
 
 // Theme try-out from the guide: the real home screen (and any conversation
@@ -529,7 +574,13 @@ private fun ThemeTryOut(vm: BridgeViewModel, back: () -> Unit) {
     // the home screen's own back handling comes first.
     BackHandler(onBack = back)
     Box(Modifier.fillMaxSize()) {
-        HomeScreen(vm)
+        CompositionLocalProvider(LocalThemePreview provides true) { HomeScreen(vm) }
+        // A new account has no conversations yet: lay the sample over the
+        // empty list so the theme still shows on the real screen.
+        val threads by vm.threads.collectAsState()
+        if (threads.isEmpty()) {
+            Box(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(start = 12.dp, end = 12.dp, top = 120.dp)) { ThemePreviewChat() }
+        }
         Surface(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(start = 12.dp, end = 12.dp, bottom = 84.dp).fillMaxWidth(),
             shape = RoundedCornerShape(16.dp), color = SurfaceBase, shadowElevation = 10.dp, border = BorderStroke(1.dp, Divider)) {
             // One row, so it covers as little of the real screen as possible.
@@ -799,7 +850,7 @@ private fun LoginScreen(vm: BridgeViewModel) {
             }
             Spacer(Modifier.height(12.dp))
             Text(
-                if (BuildConfig.ACCOUNT_LOGIN) "登录 khLink 账号即可使用官方服务（每月免费 100 MB 流量，超出后开通会员），也可以使用自己的服务器。电脑端 khLink 连接器需保持运行。"
+                if (BuildConfig.ACCOUNT_LOGIN) "登录 khLink 账号即可使用官方服务（免费，每月有免费流量），也可以使用自己的服务器。电脑端 khLink 连接器需保持运行。"
                 else "用自己的服务器地址和密码登录，或扫描电脑上的二维码。电脑端 khLink 连接器需保持运行。",
                 color = Muted,
                 lineHeight = MaterialTheme.typography.bodyMedium.lineHeight,
@@ -860,7 +911,7 @@ private fun LoginScreen(vm: BridgeViewModel) {
                         Text(state.message, color = Danger, style = MaterialTheme.typography.bodySmall)
                         if (PairingErrorMessage.needsMembership(state.message)) TextButton({
                             runCatching { loginContext.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PairingErrorMessage.MEMBERSHIP_URL)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                        }) { Text("去开通会员", color = Accent, fontWeight = FontWeight.SemiBold) }
+                        }) { Text("查看流量说明", color = Accent, fontWeight = FontWeight.SemiBold) }
                     }
                     PairingLoginState.Idle -> Text("账户主密钥只在你的设备之间加密传递。", color = Muted, style = MaterialTheme.typography.bodySmall)
                 }
@@ -976,6 +1027,12 @@ private fun HomeScreen(vm: BridgeViewModel) {
     val visibleAgents by vm.visibleAgents.collectAsState()
     val agentOpenStates by vm.agentOpenStates.collectAsState()
     val agentSnapshots by vm.agentOpenStatesByConnector.collectAsState()
+    val agentInstalled by vm.agentInstalledByConnector.collectAsState()
+    // Known to be missing on the selected computer (not merely closed).
+    // With one computer no connector may be selected: use its report.
+    val notInstalled: (String) -> Boolean = { agent ->
+        (connectorId?.let { agentInstalled[it] } ?: agentInstalled.values.singleOrNull())?.get(agent) == false
+    }
     val connectorSeenAt = vm.connectorSeenAt.collectAsState()
     val agentOrder by vm.agentOrder.collectAsState()
     val agentTabs = normalizeHomeAgentOrder(agentOrder)
@@ -1236,7 +1293,8 @@ private fun HomeScreen(vm: BridgeViewModel) {
             if (showPcLoad) FoldAway(fold, "load") { PcLoadBar(vm, connection) }
             UploadIssueBar(vm)
             FoldAway(fold, "quota") {
-                if (homeBackend == "codex") WeeklyQuotaStrip(capabilities)
+                if (notInstalled(homeBackend)) Unit
+                else if (homeBackend == "codex") WeeklyQuotaStrip(capabilities)
                 else if (homeBackend == "claude" && claudeConsent.enabled) ClaudeQuotaStrip(vm)
                 else if (homeBackend == "dsh") DshQuotaStrip(vm)
             }
@@ -1316,7 +1374,8 @@ private fun HomeScreen(vm: BridgeViewModel) {
             Box(Modifier.padding(horizontal = 12.dp)) { BackgroundRunNote() }
             LazyColumn(Modifier.fillMaxSize(), state = listState, overscrollEffect = null) {
                 if (agentStates[tab] == HomeAgentState.Closed) item { Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { AgentClosedNote(tab) } }
-                if (scoped.isEmpty() && tab == "pi") item { PiEmptyState(connection, vm::startPiWeb) }
+                if (scoped.isEmpty() && notInstalled(tab)) item { AgentNotInstalledState(tab) }
+                else if (scoped.isEmpty() && tab == "pi") item { PiEmptyState(connection, vm::startPiWeb) }
                 else if (scoped.isEmpty() && tab == "claude") item { ClaudeEmptyState(connection) { create = true } }
                 else if (scoped.isEmpty() && tab == "dsh") item { DshEmptyState(connection) }
                 else if (scoped.isEmpty()) item { EmptyState(connection) }
@@ -1368,7 +1427,8 @@ private fun HomeScreen(vm: BridgeViewModel) {
         // than a card per session, so about twice as many fit on a screen).
         LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 16.dp)) {
             if (agentStates[tab] == HomeAgentState.Closed) item { AgentClosedNote(tab) }
-            if (scoped.isEmpty() && tab == "pi") item { PiEmptyState(connection, vm::startPiWeb) }
+            if (scoped.isEmpty() && notInstalled(tab)) item { AgentNotInstalledState(tab) }
+            else if (scoped.isEmpty() && tab == "pi") item { PiEmptyState(connection, vm::startPiWeb) }
             else if (scoped.isEmpty() && tab == "claude") item { ClaudeEmptyState(connection) { create = true } }
             else if (scoped.isEmpty() && tab == "dsh") item { DshEmptyState(connection) }
             else if (scoped.isEmpty()) item { EmptyState(connection) }
@@ -2440,6 +2500,19 @@ private fun NewTaskDialog(initialBackend: String, claudeModels: List<ClaudeModel
             ) { Text("开始") }
         },
     )
+}
+
+// The selected computer does not have this agent at all (a new user's PC):
+// say so instead of "no tasks yet" and a quota that can never load.
+@Composable
+private fun AgentNotInstalledState(agent: String) {
+    val name = homeTabLabel(agent, 4)
+    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 80.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("这台电脑还没有安装 $name", fontWeight = FontWeight.SemiBold)
+        Text("在电脑上装好 $name 后，khLink 会自动接上；也可以在设置里换成别的 Agent。",
+            color = Color.Gray, style = MaterialTheme.typography.bodySmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.padding(top = 4.dp))
+    }
 }
 
 @Composable
@@ -6715,8 +6788,13 @@ private fun ChatThreadRow(thread: ThreadSummary, status: String, onLongPress: ((
 // run in the background. Then no "done" reminder comes and queued messages
 // wait until the app is opened again. Say so, with the two settings to change;
 // the card goes away once the phone lets KH Link run.
+// True inside the guide's theme preview: notes that ask for something (here
+// background running) belong to a later guide step, not to choosing colors.
+internal val LocalThemePreview = staticCompositionLocalOf { false }
+
 @Composable
 private fun BackgroundRunNote() {
+    if (LocalThemePreview.current) return
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("background-note", android.content.Context.MODE_PRIVATE) }
     val power = remember { context.getSystemService(android.os.PowerManager::class.java) }

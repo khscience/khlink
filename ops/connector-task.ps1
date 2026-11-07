@@ -123,10 +123,17 @@ switch ($Action) {
     # passes its exit code back, so restart-on-failure still works.
     $launcher = Join-Path $ConnectorDir 'run-program-hidden.vbs'
     $conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+    # The installer (32-bit NSIS) runs a 32-bit PowerShell, whose System32 is
+    # redirected to SysWOW64, where conhost.exe does not exist. Check the real
+    # 64-bit folder; the task itself runs 64-bit and uses the System32 path.
+    $conhostCheck = $conhost
+    if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+      $conhostCheck = Join-Path $env:SystemRoot 'Sysnative\conhost.exe'
+    }
     if ((Test-Path $launcher) -and (Test-VbScript)) {
       $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
       $taskAction = New-ScheduledTaskAction -Execute $wscript -Argument ('"{0}" "{1}" "{2}" "{3}" start --codex-host' -f $launcher, $ConnectorDir, $node, $cli) -WorkingDirectory $ConnectorDir
-    } elseif (Test-Path $conhost) {
+    } elseif (Test-Path $conhostCheck) {
       # Windows without VBScript (it is being removed from Windows 11): a
       # headless console host hides node's window instead. wscript showed
       # "no script engine for .vbs" and the connector never started.

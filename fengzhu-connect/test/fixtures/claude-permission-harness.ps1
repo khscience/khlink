@@ -15,6 +15,7 @@ function Control($name, $type) {
     $p=[pscustomobject]@{}
     # expandIgnored: Desktop 2.42304.2 in the background, Expand() returns and nothing opens.
     $p | Add-Member ScriptMethod Expand { if(-not $f.expandIgnored){$script:menuOpen=$true} }
+    $p | Add-Member ScriptMethod Collapse { $script:menuOpen=$false }
     $p | Add-Member ScriptProperty Current { @{ExpandCollapseState=$(if($script:menuOpen){'Expanded'}else{'Collapsed'})} }
     return $p
   }
@@ -25,7 +26,9 @@ $group.Children = @((Control 'Deny' $CT::Button), (Control $(if($f.direct -or $f
 if (-not $f.noMenu) { $group.Children += @(Control 'More allow options' $CT::Button) }
 function Root {
   $root = Control 'window' $CT::Window; $root.Children = @($group)
-  if ($script:menuOpen) { $root.Children += @((Control 'Allow once' $CT::MenuItem), (Control 'Allow and switch to Auto Auto reviews the rest of this session.' $CT::MenuItem)) }
+  # scheduledTask: a scheduled task's menu holds only "Always allow" for the task (2026-11-06).
+  if ($script:menuOpen -and $f.scheduledTask) { $root.Children += @(Control 'Always allow Saves to this scheduled task' $CT::MenuItem) }
+  elseif ($script:menuOpen) { $root.Children += @((Control 'Allow once' $CT::MenuItem), (Control 'Allow and switch to Auto Auto reviews the rest of this session.' $CT::MenuItem)) }
   return $root
 }
 function Find-All($root, $type) { foreach($child in $root.Children){ if($child.Type -eq $type){$child}; Find-All $child $type } }

@@ -427,7 +427,8 @@ class CryptoStore(private val context: Context) {
         val namespace = accountId() ?: return
         prefs.edit().remove("quota_snapshot:$namespace").apply()
     }
-    fun legalAccepted(version: String): Boolean = prefs.getString("legal_version", null) == version
+    fun legalAccepted(version: String): Boolean = prefs.getString("legal_version", null)
+        .let { it == version || (version == LegalCopy.VERSION && it in LegalCopy.STILL_ACCEPTED) }
     /** Any version was ever accepted on this install. */
     fun legalConsentedBefore(): Boolean = prefs.getString("legal_version", null) != null
     fun saveLegalConsent(version: String, diagnostics: Boolean, analytics: Boolean) {

@@ -105,6 +105,11 @@ struct SecretFile {
     // waits for that account's shared key before it starts its connector.
     #[serde(default)]
     awaiting_shared_key: bool,
+    // The account the identity's account key was made for or received from.
+    // Logging in to a different account on this computer gets a fresh key, so
+    // the new account never shares the previous account's key.
+    #[serde(default)]
+    key_account_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -276,7 +281,12 @@ fn load_runtime() -> Runtime {
             let outer: StoredFile = serde_json::from_str(&text).ok()?;
             let encrypted = B64.decode(outer.protected).ok()?;
             let plain = unprotect(&encrypted).ok()?;
-            let secrets: SecretFile = serde_json::from_slice(&plain).ok()?;
+            let mut secrets: SecretFile = serde_json::from_slice(&plain).ok()?;
+            // Older files have no owner for the key: it belongs to the account
+            // that is signed in now, if any.
+            if secrets.key_account_id.is_none() {
+                secrets.key_account_id = secrets.session.as_ref().map(|session| session.account_id.clone());
+            }
             Some((current_server(outer.server), secrets))
         });
     let (server, secrets) = loaded.unwrap_or_else(|| {
@@ -286,6 +296,7 @@ fn load_runtime() -> Runtime {
                 identity: Identity::generate(),
                 session: None,
                 awaiting_shared_key: false,
+                key_account_id: None,
             },
         )
     });
@@ -1159,6 +1170,7 @@ mod login_flow_tests {
                 identity: Identity::generate(),
                 session: None,
                 awaiting_shared_key: false,
+                key_account_id: None,
             },
             pending_login: Some(pending),
         }));
@@ -1436,6 +1448,12 @@ fn complete_login_runtime(
         {
             return Err("登录已取消".into());
         }
+        if runtime.secrets.key_account_id.as_deref().is_some_and(|id| id != session.account_id) {
+            let mut account_key = [0u8; 32];
+            OsRng.fill_bytes(&mut account_key);
+            runtime.secrets.identity.account_key = B64.encode(account_key);
+        }
+        runtime.secrets.key_account_id = Some(session.account_id.clone());
         runtime.secrets.session = Some(session);
         runtime.secrets.awaiting_shared_key =
             response.get("keyPending").and_then(Value::as_bool) == Some(true);

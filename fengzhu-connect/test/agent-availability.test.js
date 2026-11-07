@@ -100,3 +100,44 @@ test('an isolated-only Codex window never overrides the default account presence
   assert.equal(connector.agentAvailabilityPayload().codex, false);
   assert.equal(connector.codexProfileIsolationReady(), true);
 });
+
+test('installed agents: an empty home reports none, and the report is cached for a minute', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'khlink-installed-'));
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, DSH_HOME: process.env.DSH_HOME };
+  try {
+    Object.assign(process.env, { HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'Roaming'), LOCALAPPDATA: path.join(home, 'Local') });
+    delete process.env.DSH_HOME;
+    const connector = Object.create(Connector.prototype);
+    connector.codexMissing = true;
+    assert.deepEqual(connector.agentInstalledPayload(1_000), { codex: false, claude: false, dsh: false, hermes: false, pi: false });
+    fs.mkdirSync(path.join(home, '.dsh'));
+    assert.equal(connector.agentInstalledPayload(2_000).dsh, false, 'cached');
+    connector.codexMissing = false;
+    assert.deepEqual(connector.agentInstalledPayload(70_000), { codex: true, claude: false, dsh: true, hermes: false, pi: false });
+  } finally {
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('Codex in the tray and a windowless Antigravity count as open; the process check is cached', async () => {
+  if (process.platform !== 'win32') return;
+  const connector = Object.create(Connector.prototype);
+  const queries = [];
+  connector.desktopAppsQuery = (done) => queries.push(done);
+  connector.desktopAdapter = { busy: false, agentPresence: async () => ({ agentPresence: { codex: false, claude: true, antigravity: false } }) };
+  connector.isConnected = () => false;
+  const now = Date.now();
+  assert.deepEqual(connector.desktopAppsRunning(now), { codex: false, antigravity: false });
+  queries[0]({ codex: true, antigravity: true });
+  assert.deepEqual(connector.desktopAppsRunning(now + 1_000), { codex: true, antigravity: true });
+  assert.equal(queries.length, 1, 'cached for 30 s');
+  await connector.refreshAgentAvailability();
+  assert.deepEqual(connector.desktopAgentPresence, { codex: true, claude: true, antigravity: true });
+  connector.desktopAppsRunning(now + 40_000);
+  queries[1](null);
+  assert.deepEqual(connector.desktopAppsRunning(now + 41_000), { codex: true, antigravity: true }, 'a failed query keeps the last answer');
+});

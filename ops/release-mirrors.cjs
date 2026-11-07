@@ -15,7 +15,7 @@ function validatePart(value, pattern, name) {
   return value;
 }
 
-function planManifest(input, { repo, tag, fileSize }) {
+function planManifest(input, { repo, tag, fileSize, publishedTags = null }) {
   validatePart(repo, /^[A-Za-z0-9_][A-Za-z0-9_.-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/, 'release repository');
   validatePart(tag, /^[A-Za-z0-9_.-]+$/, 'release tag');
   const manifest = JSON.parse(JSON.stringify(input));
@@ -33,8 +33,13 @@ function planManifest(input, { repo, tag, fileSize }) {
     // `urls`) and an earlier release already holds it under the same name:
     // keep those links instead of uploading it again (the 41 MB desktop
     // installer went up with every phone-only release, 2026-11-05).
+    // The links count only when their release really went out: a run that
+    // failed after writing the manifest left links to a draft (2026-11-06,
+    // v2026.11.06.9), and the next run kept those 404s for the APK.
+    const prefix = `https://github.com/${repo}/releases/download/`;
     const released = Array.isArray(entry.urls) && entry.urls.some(url => typeof url === 'string'
-      && url.startsWith(`https://github.com/${repo}/releases/download/`) && url.endsWith(`/${asset}`));
+      && url.startsWith(prefix) && url.endsWith(`/${asset}`)
+      && (!publishedTags || publishedTags.has(url.slice(prefix.length).split('/')[0])));
     if (Number.isSafeInteger(size) && size > 0 && !released) {
       const github = `https://github.com/${repo}/releases/download/${tag}/${asset}`;
       const cdn = size <= MAX_CDN_BYTES ? CDN_HOSTS.map(host => `https://${host}/gh/${repo}@${tag}-dist/${asset}`) : [];
@@ -74,7 +79,15 @@ if (require.main === module) {
   if (command === 'plan') {
     const [manifestFile, repo, tag] = args;
     const input = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-    const plan = planManifest(input, { repo, tag, fileSize: name => {
+    // Published (non-draft) releases; if they cannot be listed, nothing
+    // counts as released and every package is uploaded again.
+    let publishedTags = new Set();
+    try {
+      const rows = JSON.parse(require('node:child_process').execFileSync('gh',
+        ['release', 'list', '-R', repo, '-L', '200', '--json', 'tagName,isDraft'], { encoding: 'utf8' }));
+      publishedTags = new Set(rows.filter(row => !row.isDraft).map(row => row.tagName));
+    } catch (error) { console.error(`release list unavailable, uploading every package: ${error.message}`); }
+    const plan = planManifest(input, { repo, tag, publishedTags, fileSize: name => {
       try { return fs.statSync(path.join(path.dirname(manifestFile), name)).size; } catch { return null; }
     } });
     fs.writeFileSync(manifestFile, `${JSON.stringify(plan.manifest, null, 2)}\n`);

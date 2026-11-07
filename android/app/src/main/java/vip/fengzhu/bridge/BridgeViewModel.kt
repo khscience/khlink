@@ -46,6 +46,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
     val agentOpenStates = repository.agentOpenStates
     val agentOpenStatesByConnector = repository.agentOpenStatesByConnector
+    val agentInstalledByConnector = repository.agentInstalledByConnector
     private val _visibleAgents = MutableStateFlow(repository.visibleAgents())
     val visibleAgents: StateFlow<Set<String>> = _visibleAgents
     private val _agentOrder = MutableStateFlow(repository.visibleAgentOrder())

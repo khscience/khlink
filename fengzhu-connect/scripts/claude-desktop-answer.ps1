@@ -345,6 +345,15 @@ function Invoke-PermissionChoice($group, $snapshot, $choice) {
     $items = @(Wait-For $findItem 24)
   }
   $items = @($items | Where-Object { $null -ne $_ })
+  # A scheduled task's dialog (2026-11-06) has a "More allow options" menu
+  # holding only "Always allow - Saves to this scheduled task": no Auto there.
+  # Close the menu (Escape, while the window is in front) and say so; the
+  # connector then allows once and switches the session's mode itself.
+  if ($choice -eq 'allow_auto' -and -not $items.Count) {
+    try { $menuButton = Button-Named $group '^More allow options$'; if ($menuButton) { $menuButton.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Collapse() } } catch { }
+    if (@(Find-All (Root) $CT::MenuItem).Count) { try { [void](Bring-Forward); [KhClaudeNative]::keybd_event(0x1B, 0, 0, [UIntPtr]::Zero); [KhClaudeNative]::keybd_event(0x1B, 0, 2, [UIntPtr]::Zero); Start-Sleep -Milliseconds 300 } catch { } }
+    Finish $false 'auto_not_offered'
+  }
   if ($items.Count -ne 1) {
     try { Add-Content -LiteralPath (Join-Path $env:TEMP 'khlink-claude-answer.log') -Encoding UTF8 -Value ('{0:yyyy-MM-dd HH:mm:ss} menu items matching={1} all=[{2}]' -f (Get-Date), $items.Count, ((@(Find-All (Root) $CT::MenuItem) | ForEach-Object { $_.Current.Name.Substring(0, [Math]::Min(40, $_.Current.Name.Length)) }) -join ' | ')) } catch { }
     Finish $false 'button_not_found'

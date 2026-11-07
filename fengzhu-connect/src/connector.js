@@ -3,6 +3,7 @@ const CONNECTOR_VERSION = require('../package.json').version;
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { claudeDataDirs } = require('./backends/claude-desktop-paths');
 const { StringDecoder } = require('node:string_decoder');
 const WebSocket = require('ws');
 const { BridgeApi } = require('./api');
@@ -4758,9 +4759,11 @@ class Connector {
     this.desktopAgentPresencePromise = this.desktopAdapter.agentPresence().then((response) => {
       const raw = response?.agentPresence || response?.agents || {};
       const next = {
-        codex: typeof raw.codex === 'boolean' ? raw.codex : null,
+        // An app with no window but still running counts as open; see
+        // desktopAppsRunning().
+        codex: raw.codex === true || (raw.codex === false && this.desktopAppsRunning().codex) ? true : typeof raw.codex === 'boolean' ? raw.codex : null,
         claude: typeof raw.claude === 'boolean' ? raw.claude : null,
-        antigravity: typeof raw.antigravity === 'boolean' ? raw.antigravity : null,
+        antigravity: raw.antigravity === true || (raw.antigravity === false && this.desktopAppsRunning().antigravity) ? true : typeof raw.antigravity === 'boolean' ? raw.antigravity : null,
       };
       if (next.codex === null || next.claude === null || next.antigravity === null) return false;
       this.codexProfileIsolation = raw.codexProfileIsolation === true;
@@ -4776,7 +4779,12 @@ class Connector {
     }).catch((error) => {
       // Keep the last good snapshot across a transient adapter restart. A
       // temporary scan failure must not gray all tabs for one polling tick.
-      if (typeof this.log === 'function') this.log(error);
+      // Log the first failure only: on a PC where the adapter cannot run it
+      // would otherwise fill the log every poll.
+      if (!this.desktopAgentPresenceErrorLogged && typeof this.log === 'function') {
+        this.desktopAgentPresenceErrorLogged = true;
+        this.log(new Error(`desktop app detection unavailable: ${error?.message || error}`));
+      }
       return false;
     }).finally(() => { this.desktopAgentPresencePromise = null; });
     return this.desktopAgentPresencePromise;
@@ -4809,6 +4817,7 @@ class Connector {
       connectorId: this.config?.deviceId || null,
       sentAt,
       agents: this.agentAvailabilityPayload(),
+      installed: this.agentInstalledPayload(),
       // A full set clears old cached pins even if they changed while the
       // connector/phone was offline or their history row is on an old page.
       codexPins: pins ? { connectorId: this.config?.deviceId, ids: pins.ids } : null,
@@ -4838,6 +4847,51 @@ class Connector {
   // deliberately separate from connector integrations: the connector's own
   // Codex app-server, an installed Claude binary, or a discovered Antigravity
   // history file must not make a closed desktop app look available.
+  // Whether each agent is installed on this computer at all (not whether its
+  // window is open): a phone on a fresh PC shows "install X first" instead of
+  // an empty list. Cheap existence checks, cached for a minute.
+  agentInstalledPayload(now = Date.now()) {
+    if (this._agentInstalled && now - this._agentInstalledAt < 60_000) return this._agentInstalled;
+    const home = os.homedir();
+    const exists = (file) => { try { return fs.existsSync(file); } catch { return false; } };
+    let claude = exists(path.join(home, '.claude'));
+    if (!claude) { try { claude = claudeDataDirs().some((dir) => exists(dir)); } catch {} }
+    this._agentInstalled = {
+      codex: !this.codexMissing,
+      claude,
+      dsh: Boolean(this.dshOnline) || exists(process.env.DSH_HOME || path.join(home, '.dsh')),
+      hermes: Boolean(this.hermesTransport),
+      pi: Boolean(this.piOnline) || exists(path.join(home, '.pi')),
+    };
+    this._agentInstalledAt = now;
+    return this._agentInstalled;
+  }
+
+  // Whether a desktop app runs at all, window or tray: the Codex desktop app
+  // (OpenAI.Codex's ChatGPT.exe, not the ChatGPT app) and Antigravity. The
+  // window check misses both when they sit in the tray or keep no main window
+  // (2026-11-07: the owner wants them shown as open). Answers from a cache and
+  // refreshes it in the background at most every 30 s, so the 5 s presence
+  // poll never waits for the process query.
+  desktopAppsRunning(now = Date.now()) {
+    if (process.platform !== 'win32') return { codex: false, antigravity: false };
+    if (!this._desktopAppsCheck || now - this._desktopAppsCheck.at > 30_000) {
+      this._desktopAppsCheck = { at: now, running: this._desktopAppsCheck?.running ?? { codex: false, antigravity: false } };
+      const query = "$p = Get-CimInstance Win32_Process -Filter \"Name='ChatGPT.exe' or Name='Antigravity.exe'\" | ForEach-Object { $_.ExecutablePath }; "
+        + "'codex=' + [int][bool]($p | Where-Object { $_ -like '*\OpenAI.Codex_*' }) + ';antigravity=' + [int][bool]($p | Where-Object { $_ -like '*\Antigravity.exe' })";
+      (this.desktopAppsQuery || ((done) => require('node:child_process').execFile('powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', query], { windowsHide: true, timeout: 15_000 },
+        (error, stdout) => {
+          const text = String(stdout || '');
+          done(error || !/codex=\d;antigravity=\d/.test(text) ? null
+            : { codex: /codex=1/.test(text), antigravity: /antigravity=1/.test(text) });
+        })))((running) => {
+        if (running && this._desktopAppsCheck) this._desktopAppsCheck.running = running;
+      });
+    }
+    return this._desktopAppsCheck.running;
+  }
+
   agentAvailabilityPayload() {
     const desktop = this.desktopAgentPresence || {};
     return {
