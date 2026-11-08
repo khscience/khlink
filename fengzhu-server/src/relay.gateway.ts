@@ -138,8 +138,9 @@ export class RelayGateway implements OnModuleDestroy {
       }
       if (device.lastSeenAt < Date.now() - 60000) this.database.touchAccountDevice(claims.sub, claims.deviceId)
       const remoteWrite = claims.type === 'android' && ['command', 'command.control', 'file.command', 'approval.resolve'].includes(frame.kind)
-      if (remoteWrite && !this.entitlement.forAccount(claims.sub).canWrite) {
-        socket.send(JSON.stringify({ type: 'error', code: 'membership_read_only', id: frame.id, message: 'KH Link membership is read-only' })); return
+      const entitlement = remoteWrite ? this.entitlement.forAccount(claims.sub) : null
+      if (entitlement && !entitlement.canWrite) {
+        socket.send(JSON.stringify({ type: 'error', code: 'membership_read_only', id: frame.id, message: this.entitlement.readOnlyMessage(entitlement) })); return
       }
       const ephemeral = frame.kind === 'file.command' || frame.kind === 'file.result' ||
         frame.kind === 'thread.status.snapshot' || frame.kind === 'connector.presence'

@@ -20,8 +20,12 @@ $task = 'FengzhuAgentBridge'
 $dataDir = Join-Path $env:APPDATA 'FengzhuAgentBridge'
 $log = Join-Path $dataDir ("logs\connector-{0}.log" -f (Get-Date -Format 'yyyy-MM-dd'))
 
+# A source checkout runs from ...\fengzhu-connect, the installed connector
+# from %LOCALAPPDATA%\khLink\connector. Matching only the first missed the
+# installed one: the script then took the full path, Stop-ScheduledTask left
+# the processes running and the new start failed on the busy Codex host.
 function Connector-Processes {
-  Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'fengzhu-connect' }
+  Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'fengzhu-connect|khLink\\connector' }
 }
 
 function Restart-Once {

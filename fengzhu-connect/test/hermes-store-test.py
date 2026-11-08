@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 HELPER = Path(__file__).resolve().parents[1] / "src" / "backends" / "hermes-store.py"
@@ -123,6 +124,65 @@ class HermesStoreTest(unittest.TestCase):
         self.assertEqual([r["id"] for r in result["messages"]], [12, 13])
         self.assertEqual([r["id"] for r in self.messages("root", after=12, limit=1)["messages"]], [13])
         self.assertNotIn("other-child", result["segments"])
+
+    def test_reopened_reset_parent_keeps_only_canonical_continuation(self):
+        self.add_reset_and_compression()
+        self.conn.execute("UPDATE sessions SET end_reason='ws_orphan_reap' WHERE id='root'")
+        self.conn.commit()
+        self.set_reset_receipt("root", ["root", "reset-child", "compressed-child"])
+        row = self.list_sessions()["root"]
+        self.assertEqual(set(row["segments"]), {"root", "reset-child", "compressed-child"})
+        self.assertEqual(row["execution_state"], "running")
+        self.assertEqual(row["max_message_id"], 13)
+        self.assertEqual([r["id"] for r in self.messages("root", after=10)["messages"]], [12, 13])
+
+    def test_reopened_parent_without_matching_receipt_is_not_merged(self):
+        self.add_reset_and_compression()
+        self.conn.execute("UPDATE sessions SET end_reason='ws_orphan_reap' WHERE id='root'")
+        self.conn.commit()
+        self.set_reset_receipt("other", ["other", "reset-child"])
+        self.assertEqual(self.messages("root")["segments"], ["root"])
+        self.assertEqual(self.list_sessions()["root"]["max_message_id"], 10)
+
+    def test_unexpired_turn_lease_tracks_quiet_external_turn(self):
+        self.add_reset_and_compression()
+        self.set_reset_receipt("root", ["root", "reset-child", "compressed-child"])
+        self.conn.execute("UPDATE session_admissions SET status='terminal',outcome='completed'")
+        self.conn.execute("CREATE TABLE session_turn_leases (conversation_id TEXT, expires_at REAL)")
+        self.conn.execute("INSERT INTO session_turn_leases VALUES (?, ?)", ("compressed-child", time.time() + 300))
+        self.conn.commit()
+        self.assertEqual(self.list_sessions()["root"]["execution_state"], "running")
+        self.conn.execute("UPDATE session_turn_leases SET expires_at=?", (time.time() - 1,))
+        self.conn.commit()
+        self.assertEqual(self.list_sessions()["root"]["execution_state"], "idle")
+
+    def test_lease_only_store_and_unrelated_lease(self):
+        self.conn.execute("DROP TABLE session_admissions")
+        self.conn.execute("CREATE TABLE session_turn_leases (conversation_id TEXT, expires_at REAL)")
+        self.conn.execute("INSERT INTO session_turn_leases VALUES (?, ?)", ("other", time.time() + 300))
+        self.conn.commit()
+        rows = self.list_sessions()
+        self.assertEqual(rows["root"]["execution_state"], "idle")
+        self.assertEqual(rows["other"]["execution_state"], "running")
+
+    def test_old_parent_outcome_does_not_end_a_later_continuation(self):
+        self.add_reset_and_compression()
+        self.set_reset_receipt("root", ["root", "reset-child", "compressed-child"])
+        self.conn.execute("UPDATE session_admissions SET target_session_id='root',status='terminal',outcome='failed'")
+        self.conn.commit()
+        row = self.list_sessions()["root"]
+        self.assertEqual(row["execution_state"], "idle")
+        self.assertNotIn("execution_outcome", row)
+
+    def test_compression_parent_outcome_still_applies_to_child(self):
+        self.conn.execute("UPDATE sessions SET end_reason='compression', ended_at=210 WHERE id='root'")
+        self.conn.execute("INSERT INTO sessions VALUES ('child','local',NULL,1,211,NULL,NULL,300,'root')")
+        self.conn.execute("INSERT INTO messages VALUES (12,'child','assistant',NULL,300)")
+        self.conn.execute("UPDATE session_admissions SET status='terminal',outcome='interrupted' WHERE seq=1")
+        self.conn.commit()
+        row = self.list_sessions()["root"]
+        self.assertEqual(row["execution_state"], "idle")
+        self.assertEqual(row["execution_outcome"], "interrupted")
 
     def test_unapproved_reset_and_delegated_branch_are_never_merged(self):
         self.add_reset_and_compression()

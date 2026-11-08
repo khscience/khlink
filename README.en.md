@@ -6,77 +6,61 @@
 
 ### Your agents work on your PC. You steer them from your phone.
 
-Carry the Codex, Claude Code and other agent sessions running on your computer to your Android phone.<br/>
-Answer questions, approve actions, send instructions and start new tasks — the work keeps going while you're away.
+The Codex, Claude Code and other agent sessions running on your computer, brought to your Android phone as they are.<br/>
+Approve, answer, send new instructions. You're away from the desk, and the work keeps going.
 
 [![CI](https://github.com/khscience/khlink/actions/workflows/ci.yml/badge.svg)](https://github.com/khscience/khlink/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)](LICENSE)
-![Android](https://img.shields.io/badge/Android-app-3ddc84?logo=android&logoColor=white)
-![Windows](https://img.shields.io/badge/Windows-connector-0078d4)
+![Android](https://img.shields.io/badge/Android-7.0+-3ddc84?logo=android&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078d4)
 ![E2EE](https://img.shields.io/badge/E2EE-XChaCha20--Poly1305-111827)
 
 [简体中文](README.md) · **English** · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md)
 
-**[⬇️ Download the phone app and the PC installer](https://github.com/khscience/khlink-releases/releases/latest)** · [Website](https://khsci.com/khlink/)
-
-[Why khLink](#why-khlink) · [Three ways to run it](#three-ways-to-run-it) · [Supported agents](#supported-agents) · [How it works](#how-it-works) · [FAQ](#faq)
+**[⬇️ Download khLink](https://github.com/khscience/khlink-releases/releases/latest)** · [Website](https://khsci.com/khlink/) · [Tutorial](https://khsci.com/khlink/tutorial)
 
 <img src="docs/screenshots/hero.png" alt="khLink on the phone and the desktop" width="100%" />
+
+<sub>The accounts and sessions in the screenshots are demo data.</sub>
 
 </div>
 
 ---
 
-## Why khLink
+## Completely free, fully open source
 
-AI coding agents run for minutes, sometimes hours, and keep stopping to wait for you: to approve a command, to pick between options, or for the next instruction once a turn is done. Step away from the desk and the agent just sits there.
+The source of the phone app, the PC side and the relay server is all public (MIT). The three ways to connect have the same features, and none of them costs anything:
 
-khLink fixes that.
+- **QR direct link**: the PC shows a QR code, the phone scans it, and you're connected. No account, and nothing goes through khLink servers.
+- **Your own server**: deploy the open-source relay on your own machine and sign in with a server password. No account needed.
+- **Our server**: sign in to a khLink account and go. Every account gets 300 MB of free traffic each month, and khQuant VIP members have no limit. khLink does not sell memberships.
 
-<table>
-<tr>
-<td width="50%" valign="top">
+Whichever you pick, content is end-to-end encrypted; a relay only ever sees ciphertext.
 
-#### 🔁 The same session, not a copy
-It isn't a separate chat. What you see on the phone is the session on your PC: start a task at the desk and continue it on the phone, or the other way round. Model, reasoning effort, fast mode and plan mode stay in sync on both sides.
+## When an agent stops, it's waiting for you
 
-</td>
-<td width="50%" valign="top">
+AI coding agents run for ten minutes or more at a time and keep stopping along the way: to have you approve a command, to have you pick between a few options, or to wait for your next step once they're done. Step away from the PC and the agent just sits there.
 
-#### 🔔 Your phone knows the moment it's your turn
-Approval requests, questions and finished turns arrive as notifications. The choices are exactly the ones on the PC; tap one and the prompt closes at once while the answer is delivered in the background.
+| | What the agent is waiting for | What you do on the phone |
+| --- | --- | --- |
+| **Approve** | to run a command or change files | see exactly what it will do, then allow or deny |
+| **Answer** | for you to pick between options | the same choices as on the PC; one tap delivers it |
+| **Continue** | a turn is done, next step please | keep talking in the same session, queued or cutting in right away |
+| **Look** | you want to see the result now | pull files from the PC to the phone and preview them |
 
-</td>
-</tr>
-<tr>
-<td valign="top">
+## What it does
 
-#### 🔒 Your code and accounts stay on your PC
-Agents always run on your own computer and sign in through their official apps or CLIs; khLink never reads or forwards their credentials. Content between phone and PC is end-to-end encrypted, so a relay only ever sees ciphertext.
+**The same session.** Not a separate chat window: a task started on the PC continues on the phone, and one started on the phone continues back at the PC. Model, reasoning effort, fast mode and plan mode stay in sync on both sides.
 
-</td>
-<td valign="top">
-
-#### 🧩 One app, seven agents, several PCs
-Codex, Claude Code, Claude Desktop, DeepSeek Harness, Hermes, Pi and Antigravity in one list. Signed in with a khLink account, one phone can manage several Windows PCs, with each PC's sessions kept apart.
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-#### 📶 Easy on mobile data
-In light mode, long tool output and files stay on the PC and only the conversation comes over; open a block when you want it. The session list syncs only what changed.
-
-</td>
-<td valign="top">
-
-#### 🛠️ Much more than chat
-Messages sent while the agent is busy are queued. Read code, images and files, and pull files from the PC to the phone. See quotas and per-turn token usage. Compact the context, fork a task or roll back a turn.
-
-</td>
-</tr>
-</table>
+- **Live status**: running, waiting for you, done — visible at a glance in the list.
+- **Queue or send now**: messages sent while the agent is busy are queued automatically, or you can cut into the current turn right away.
+- **Approvals and questions**: the phone notifies you when the agent asks for approval, asks a question or wants you to confirm a plan. Multiple-choice and free-form answers both work; plans can be accepted, changed or rejected. When an outcome is uncertain, you're asked to check first, so an instruction never runs twice.
+- **Files**: tap a PC file path in the conversation to pull it to the phone and preview it. Markdown and HTML can be viewed rendered or as source, code is highlighted by language, and large files come over in parts. Credential and key directories can't be read.
+- **Images and attachments**: send images and files to the agent from the phone.
+- **Per-turn usage**: the tokens a turn used appear under the reply, and you can check each agent's quota.
+- **Several PCs**: one account can connect several Windows PCs, with sessions kept apart per PC; switch with one tap on the home screen.
+- **Light mode**: long tool output and screenshots stay on the PC until you ask for them, which saves mobile data.
+- **Four themes**: Chat app, Codex style, Default and Minimal. Try them in the setup guide of a fresh install, and switch any time later.
 
 ## Screenshots
 
@@ -88,41 +72,55 @@ Messages sent while the agent is busy are queued. Read code, images and files, a
   </tr>
   <tr>
     <td align="center">Every session, live status</td>
-    <td align="center">Lists, code and files</td>
+    <td align="center">Code, images and files</td>
     <td align="center">Pick how to connect</td>
   </tr>
 </table>
 
-<img src="docs/screenshots/desktop.png" alt="The desktop console" width="100%" />
+<img src="docs/screenshots/desktop.png" alt="The khLink desktop console" width="100%" />
 
-<sub>The sessions in the screenshots are made-up demo data.</sub>
+## Getting started
 
-## Three ways to run it
+You need a Windows 10 / 11 (64-bit) PC with the agents you want to use, and an Android 7.0+ phone. The app's interface is in Chinese for now.
 
-The phone app, the PC side and the relay server are all open source. How they connect is up to you:
+1. **Install khLink on the PC**: [download the installer](https://github.com/khscience/khlink-releases/releases/latest); the desktop console and the background connector come in one package.
+2. **Install the app on the phone**: download the APK from the same page and confirm the system prompt when installing.
+3. **Connect them**: sign in to the same khLink account on both, or scan the QR code on the PC once.
 
-| | ① Your own server | ② QR direct link | ③ Official service |
+The PC installer is not code-signed yet. If Windows says it "protected your PC", check the file against the SHA-256 on the Releases page, then click **More info → Run anyway**. Step-by-step details are in the [tutorial](https://khsci.com/khlink/tutorial).
+
+## Three ways to connect
+
+Try the QR direct link first for free. If you're often away and have a server of your own, host the relay. If you'd rather not deal with servers or networks, use the official service. All three use the same app and the same connector, and you can switch at any time.
+
+| | QR direct link | Your own server | Official service |
 | --- | :---: | :---: | :---: |
-| Server needed | one of yours | **none** | none |
-| khLink account | not needed | not needed | needed |
-| Cost | free | free | 100 MB free each month, then a membership |
-| Works away from home | ✅ | most reliable on the same Wi-Fi; across networks via a Cloudflare temporary tunnel | ✅ |
+| Cost | free | free | free, 300 MB of traffic a month |
+| Server needed | none | one of yours | none |
+| khLink account needed | no | no | yes |
+| Works away from home | ✅ via a Cloudflare temporary tunnel | ✅ | ✅ |
+| Multiple devices | one phone to one PC | several phones | several phones and PCs |
+| After a restart | reconnects after the app or connector restarts; after the PC restarts, scan again when away from home | reconnects automatically | reconnects automatically |
 | Content encryption | end-to-end | end-to-end | end-to-end |
-| Best for | full control, you have a server | trying it for free, home or office use | install and go |
+| Best for | trying it at no cost, mostly at home or the office | you have a server and want full control | install and go |
 
-**Requirements**: an Android 7.0+ phone; a Windows 10 / 11 (64-bit) PC with the agents you want to use. The app's interface is in Chinese for now.
+### QR direct link
 
-### Run it yourself
+1. Install khLink on the PC and the phone.
+2. Open the desktop console on the PC and click **二维码直连** (QR direct link).
+3. On the phone's sign-in page tap **扫描电脑二维码** (scan the PC's QR code).
 
-#### ① You have a server: host the relay
+The two set up an encrypted channel over WebRTC, and messages, approvals and files travel straight between phone and PC. On the same Wi-Fi or phone hotspot they connect peer to peer, which is the most reliable; on different networks traffic goes through a Cloudflare temporary tunnel (cloudflared ships with the installer, no account needed). Each QR code works once and is valid for five minutes. Details: **[Direct connection](docs/zh-CN/direct-connection.md)**.
 
-The relay only forwards encrypted messages. Once it is up you sign in with a server password — no account, no fees.
+### Your own server
+
+The relay only forwards encrypted messages, and you sign in with a server password — no account needed. You need a server with a public address and HTTPS set up.
 
 ```bash
 # On the server (Node.js 22, nginx with HTTPS)
 git clone https://github.com/khscience/khlink.git && cd khlink
 npm ci && npm run build
-# then the config file, the systemd service and nginx: see docs/self-hosting.md
+# then the config file, the systemd service and nginx: see docs/zh-CN/self-hosting.md
 ```
 
 ```powershell
@@ -133,62 +131,46 @@ node fengzhu-connect\src\cli.js setup --server https://bridge.example.com/fengzh
 powershell -ExecutionPolicy Bypass -File ops\install-connector.ps1 -EnableAutoStart
 ```
 
-The phone app can be the official build or your own. On its sign-in page tap **使用自己的服务器** (use my own server) and enter the address and password. Full guide: **[Self-hosting](docs/self-hosting.md)**.
+On the phone's sign-in page tap **使用自己的服务器** (use my own server) and enter the address and password. Full guide: **[Self-hosting](docs/zh-CN/self-hosting.md)**.
 
-#### ② No server at all: scan a QR code
+### Our server
 
-No server and no account needed:
+Sign in to the same khLink account in the desktop console and on the phone, and your PC's sessions appear. One account can connect several phones and several PCs.
 
-1. Install the khLink installer on the PC ([download](https://github.com/khscience/khlink-releases/releases/latest), or build [`kh-link-desktop`](kh-link-desktop) yourself) and the khLink app on the phone.
-2. In the desktop console, open **二维码直连** (QR direct link).
-3. On the phone's sign-in page tap **扫描电脑二维码** (scan the PC's QR code) and scan it.
-
-The two set up an encrypted WebRTC channel, and messages, approvals and files travel straight between phone and PC without any service in the middle.
-
-- **Same Wi-Fi or phone hotspot**: no outside service involved; the most reliable setup.
-- **Different networks**: traffic goes through a Cloudflare temporary tunnel (cloudflared ships with the installer, no account needed). Content is end-to-end encrypted and does not pass through khLink servers. The tunnel survives a connector restart; after the PC restarts, scan again when away from home.
-
-Each code works once and expires after five minutes. Once paired, the phone reconnects by itself after the app or the connector restarts; after the PC restarts, scan again when away from home. If the PC is also signed in to an account and the direct link keeps failing, the phone can switch to the account login and reconnect through the official relay. Details: **[Direct connection](docs/zh-CN/direct-connection.md)** (Chinese).
-
-### ③ The official service: install and go
-
-If you'd rather not deal with servers or networks, use our relay:
-
-1. Download from [Releases](https://github.com/khscience/khlink-releases/releases/latest) or the [website](https://khsci.com/khlink/), and install the khLink app on the phone and the khLink installer on the Windows PC (desktop console and connector in one package).
-2. Sign in to a khLink account in the desktop console. Every account gets 100 MB of free traffic each month; beyond that, a membership removes the limit.
-3. Sign in to the same account on the phone, and your PC's sessions appear.
-
-Every account gets 100 MB free each month; beyond that, a small membership fee covers the cost of the servers and their traffic. Content is still end-to-end encrypted; the service cannot read your code or conversations.
+Every account gets 300 MB of free traffic each month (per calendar month in Beijing time; only uploads and downloads through the official server count, heartbeats don't). The app reminds you at 80% and when it's used up. After that you can still sign in and view what's already on the phone, but remote actions are paused until the 1st of next month. khQuant VIP members have no limit.
 
 ## Supported agents
 
-| Agent | How khLink connects |
+| Agent | How khLink connects to it |
 | --- | --- |
 | **OpenAI Codex** | the official `codex app-server`, sharing sessions with the Codex desktop app |
 | **Claude Code** | the official CLI and its session files |
 | **Claude Desktop** | the official app's window and session files |
-| **DeepSeek Harness** | a small bridge plugin ([details](docs/zh-CN/deepseek-harness.md)) |
-| **Hermes Agent** | ACP inside WSL plus its read-only session store ([details](docs/zh-CN/hermes.md)) |
-| **Pi** | Pi's own web process |
+| **DeepSeek Harness** | a small bridge plugin, used only to find the local endpoint it opens ([details](docs/zh-CN/deepseek-harness.md)) |
+| **Hermes Agent** | ACP inside WSL on the PC, plus its read-only session store ([details](docs/zh-CN/hermes.md)) |
+| **Pi** | Pi's own web service (PI WEB) |
 | **Antigravity** | the official app's window |
 
-Every agent signs in on your PC through its own official app or CLI. khLink talks to it the way you would and never touches its credentials.
+Every agent runs on your PC and signs in through its own official app or CLI. khLink deals with it the same way you do and never touches its credentials. Agents that aren't installed are skipped; install one later and it's picked up within a minute.
+
+## Security
+
+- **End-to-end encryption**: content is encrypted with XChaCha20-Poly1305 before it leaves a device, and the account key lives only on your phone and PCs.
+- **The relay sees only routing information**: device and session IDs, timing and message sizes. A QR direct link doesn't go through a relay at all.
+- **Hands off your agent accounts**: khLink doesn't read, copy or send agent credentials, and usage counts against your own account.
+- **Signed updates**: update packages for the phone and the PC are signature-checked and not installed if the check fails.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    phone["📱 Android app"] <-->|"end-to-end encrypted"| relay["☁️ Relay<br/>your server or the official service"]
-    relay <-->|"end-to-end encrypted"| pc["🖥️ Connector<br/>on your PC"]
-    phone <-.->|"② QR direct link (WebRTC)"| pc
-    pc <--> agents["🤖 Codex · Claude Code · …"]
+    phone["📱 Android app"] <-->|"end-to-end encrypted"| relay["☁️ Relay<br/>your own server or the official service"]
+    relay <-->|"end-to-end encrypted"| pc["🖥️ Connector<br/>runs on your PC"]
+    phone <-.->|"QR direct link (WebRTC)"| pc
+    pc <--> agents["🤖 Codex · Claude · DeepSeek · …"]
 ```
 
-- Content is encrypted with XChaCha20-Poly1305 before it leaves a device, and the account key lives only on your phone and PCs. A relay sees device and session IDs, timing and message sizes — nothing more.
-- The connector runs as a scheduled task of the current user; no administrator rights needed.
-- In-app updates on the phone and the PC are signature-checked and refused if the check fails.
-  They come from GitHub Releases first, then jsDelivr (phone only), with the khLink server as
-  the fallback.
+The connector runs in the background as a scheduled task of the current user; no administrator rights needed. Updates come from GitHub Releases first, the phone also tries jsDelivr, and the khLink server is the fallback when neither is reachable.
 
 | Part | Directory | Built with |
 | --- | --- | --- |
@@ -200,132 +182,107 @@ flowchart LR
 
 Wire format and encryption: [protocol/v1.md](protocol/v1.md).
 
-## Build from source
-
-<details>
-<summary>Requirements and commands</summary>
-
-You need Node.js 22, JDK 17 with the Android SDK, Rust stable with the
-[Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for Windows, and
-PowerShell 5.1.
-
-```bash
-npm ci
-npm test                                   # relay and connector
-npm run build                              # relay
-cd android && ./gradlew testDebugUnitTest assembleDebug
-cd kh-link-desktop/src-tauri && cargo test
-cd desktop-adapter && cargo test
-```
-
-- Release builds: [android/RELEASE.md](android/RELEASE.md) and the
-  [combined installer](docs/zh-CN/combined-installer.md).
-- `fengzhu-connect/bin/` holds the prebuilt desktop adapter and a small native helper. The
-  helper is pinned by SHA-256 in `fengzhu-connect/scripts/claude-desktop-native.ps1`; rebuild it
-  from `fengzhu-connect/native/` and update that hash together.
-- Publishing your own app? Change the Android `applicationId` (`vip.fengzhu.bridge`) and drop
-  or replace `updatePublicKey` and `updateMirrors` (the GitHub and jsDelivr sources) in
-  `android/khlink-official.properties`, and `UPDATE_PUBLIC_KEY` and `UPDATE_MIRROR` in
-  `kh-link-desktop/src-tauri/src/connector_update.rs`, or your users will be offered official
-  updates they cannot install.
-- The package names say `fengzhu`, the project's early name.
-
-</details>
-
 ## FAQ
 
 <details>
-<summary><b>Can the relay read my code or conversations?</b></summary>
+<summary><b>Does khLink cost money?</b></summary>
 
-No — neither the official service nor a self-hosted relay. The phone and the connector encrypt
-content before it leaves the device, and the key never passes through the relay. The relay sees
-routing metadata (device, thread and event IDs), timing and the size of encrypted messages. A QR
-direct link doesn't use a relay at all.
+The software is free and the source is public under the MIT license. The QR direct link and your own server cost nothing. The official server is free too: 300 MB of traffic per account each month, and khQuant VIP members have no limit. khLink does not sell memberships, and all three ways have the same features.
 </details>
 
 <details>
-<summary><b>Which of the three should I pick?</b></summary>
+<summary><b>Is 300 MB of free traffic enough? What happens when it runs out?</b></summary>
 
-Try the QR direct link first — it's free and very reliable on a shared Wi-Fi at home or in the
-office. If you're often away and have a server, host the relay. If you don't want to manage
-servers or networks, use the official service. All three use the same app and connector, so you
-can switch at any time.
-</details>
-
-<details>
-<summary><b>Why does the official service cost money?</b></summary>
-
-Servers and traffic cost money. Every account gets 100 MB free each month, and the membership beyond that only covers the cost. Self-hosting and the QR
-direct link are free and have the same features.
+For sending instructions and reading replies, 300 MB a month is usually enough; syncing very long conversations or transferring files often uses it up faster. The **我** (Me) page in the app shows how much you've used this month, and you're reminded at 80% and when it's used up. After that you can still sign in and view what's already on the phone; only remote actions are paused until the 1st of next month (Beijing time). The QR direct link and your own server are not affected.
 </details>
 
 <details>
 <summary><b>Does my PC have to stay on?</b></summary>
 
-Yes. The agents run on the PC, so when it is off or asleep they stop too. The phone still shows what has
-already synced, but nothing new can run. Turn off automatic sleep before you head out.
+Yes. The agents run on the PC, so when it's off or asleep they stop too; the phone can still show what has already synced. Turn off automatic sleep before you head out.
 </details>
 
 <details>
-<summary><b>Is the app available in English?</b></summary>
+<summary><b>Can I use several phones and several PCs together?</b></summary>
 
-Not yet — the interface is in Chinese. Translations are welcome.
+With the official service, yes: phones and PCs signed in to the same account can all be online at once, and the phone switches between PCs. A self-hosted server supports several phones signed in at once. The QR direct link is currently one phone to one PC.
+</details>
+
+<details>
+<summary><b>Can the relay see my code and conversations?</b></summary>
+
+No. The phone and the PC encrypt content before it leaves the device, and the key never passes through the relay. What the relay can see is device, session and event IDs, timing and the size of encrypted messages. A QR direct link doesn't go through a relay at all.
 </details>
 
 <details>
 <summary><b>Does khLink use my agents' accounts or API keys?</b></summary>
 
-No. Each agent signs in through its official app or CLI on your computer; khLink does not read,
-copy or send their credentials, and usage counts against your own account as usual.
+No. Each agent signs in on your PC through its official app or CLI; khLink doesn't read, copy or send their credentials, and usage counts against your own account.
 </details>
 
 <details>
-<summary><b>Windows says it "protected your PC" when I run the installer?</b></summary>
+<summary><b>Do I have to install Codex on the PC?</b></summary>
 
-The PC installer is not code-signed yet, so SmartScreen warns about it. Click **More info → Run anyway**.
-To be sure the file is genuine, compare it with the SHA-256 listed on the Releases page.
+No. You can use only other agents such as Claude, DeepSeek or Hermes, and khLink skips Codex. Install Codex later and it's picked up within a minute, no restart needed.
 </details>
 
 <details>
-<summary><b>Is there an iPhone app, or a connector for macOS or Linux?</b></summary>
+<summary><b>Is there an iPhone app? Does the PC side support macOS?</b></summary>
 
-Not yet. The app is Android only, and the connector runs on Windows (Hermes runs inside WSL
-on that Windows PC).
+Not yet. The app is Android only, and the PC side supports Windows only (Hermes runs in WSL on that PC).
+</details>
+
+More answers in the [tutorial](https://khsci.com/khlink/tutorial) and [Troubleshooting](docs/zh-CN/troubleshooting.md).
+
+## Build from source
+
+<details>
+<summary>Requirements and commands</summary>
+
+You need Node.js 22, JDK 17 with the Android SDK, Rust stable with the [Tauri 2 prerequisites for Windows](https://v2.tauri.app/start/prerequisites/), and PowerShell 5.1.
+
+```bash
+npm ci
+npm test                                   # relay and connector
+npm run build                              # build the relay
+cd android && ./gradlew testDebugUnitTest assembleDebug
+cd kh-link-desktop/src-tauri && cargo test
+cd desktop-adapter && cargo test
+```
+
+- Release builds: see [android/RELEASE.md](android/RELEASE.md) and the [combined installer](docs/zh-CN/combined-installer.md).
+- `fengzhu-connect/bin/` holds the prebuilt desktop adapter and a small native helper library. The helper's SHA-256 is checked in `fengzhu-connect/scripts/claude-desktop-native.ps1`; if you rebuild it from `fengzhu-connect/native/`, update that hash too.
+- Publishing your own app? Change the Android `applicationId` (`vip.fengzhu.bridge`), drop or replace `updatePublicKey` and `updateMirrors` in `android/khlink-official.properties`, and on the desktop side change `UPDATE_PUBLIC_KEY` and `UPDATE_MIRROR` in `kh-link-desktop/src-tauri/src/connector_update.rs`, or your users will be offered official updates they can't install.
+- The `fengzhu` in the package names is the project's early name.
+
 </details>
 
 ## Documentation
 
 | | |
 | --- | --- |
-| [Self-hosting](docs/self-hosting.md) · [自建中转](docs/zh-CN/self-hosting.md) | run your own relay |
-| [Direct connection](docs/zh-CN/direct-connection.md) | WebRTC link from a QR code, no server |
-| [Desktop connection flow](docs/zh-CN/desktop-connection-flow.md) | sign-in, pairing and status on the PC |
-| [Several computers](docs/zh-CN/multi-pc.md) | one account, many PCs |
-| [App updates](docs/zh-CN/android-app-updates.md) | signed in-app updates |
-| [Troubleshooting](docs/zh-CN/troubleshooting.md) | common problems |
+| [Direct connection](docs/zh-CN/direct-connection.md) (Chinese) | WebRTC direct link without a server |
+| [Self-hosting](docs/zh-CN/self-hosting.md) (Chinese) | deploy your own relay server |
+| [Desktop connection flow](docs/zh-CN/desktop-connection-flow.md) (Chinese) | sign-in, pairing and status on the PC |
+| [One account, several PCs](docs/zh-CN/multi-pc.md) (Chinese) | connect several PCs to the same account |
+| [Phone updates](docs/zh-CN/android-app-updates.md) (Chinese) | signature-checked in-app updates |
+| [Troubleshooting](docs/zh-CN/troubleshooting.md) (Chinese) | fixing common problems |
 | [Protocol](protocol/v1.md) | wire format and encryption |
-
-Most guides are in Chinese; English contributions are welcome.
 
 ## Contributing
 
-Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first,
-and report security problems privately as described in [SECURITY.md](SECURITY.md).
+Issues and PRs are welcome; please read [CONTRIBUTING.md](CONTRIBUTING.md) first. Report security problems privately as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-[MIT](LICENSE). The terms in `docs/kh-link-*.md` apply only to the official service and its
-installers.
+[MIT](LICENSE). The terms in `docs/kh-link-*.md` apply only to the official service and the official installers.
 
 ## Acknowledgements
 
-khLink grew out of [Linco Bridge](https://github.com/lincotalk/linco-bridge) (MIT), whose
-copyright notice is kept. It is built on [Tauri](https://tauri.app),
-[NestJS](https://nestjs.com), [Jetpack Compose](https://developer.android.com/compose),
-[libsodium](https://libsodium.org) and [werift](https://github.com/shinyoshiaki/werift-webrtc).
+khLink grew out of [Linco Bridge](https://github.com/lincotalk/linco-bridge) (MIT), whose copyright notice is kept. It is built on [Tauri](https://tauri.app), [NestJS](https://nestjs.com), [Jetpack Compose](https://developer.android.com/compose), [libsodium](https://libsodium.org) and [werift](https://github.com/shinyoshiaki/werift-webrtc).
 
 <div align="center">
 
-If khLink saves you a trip back to your desk, a ⭐ helps others find it.
+If khLink saves you a few trips back to your desk, a ⭐ helps more people find it.
 
 </div>

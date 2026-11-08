@@ -138,6 +138,8 @@ struct Runtime {
     server: String,
     secrets: SecretFile,
     pending_login: Option<PendingLogin>,
+    // Names of the computers a joining computer waits for (from the server).
+    key_holders: Vec<String>,
 }
 
 struct AppState(Arc<Mutex<Runtime>>);
@@ -173,6 +175,7 @@ struct DesktopState {
     autostart: bool,
     connector: Value,
     awaiting_shared_key: bool,
+    key_holders: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -304,6 +307,7 @@ fn load_runtime() -> Runtime {
         server,
         secrets,
         pending_login: None,
+        key_holders: Vec::new(),
     }
 }
 
@@ -574,6 +578,18 @@ fn adopt_shared_key(shared: &Mutex<Runtime>, wait: Duration) -> Result<bool, Str
             runtime.secrets.awaiting_shared_key = false;
             save_runtime(&runtime)?;
             return Ok(true);
+        }
+        // Every computer it waited for has been unbound: the server lets this
+        // one keep its own key and re-keys the phones from it.
+        if response.get("noKeyHolder").and_then(Value::as_bool) == Some(true) {
+            let mut runtime = lock_runtime(shared)?;
+            runtime.secrets.awaiting_shared_key = false;
+            runtime.key_holders.clear();
+            save_runtime(&runtime)?;
+            return Ok(true);
+        }
+        if let Some(holders) = response.get("holders").and_then(Value::as_array) {
+            lock_runtime(shared)?.key_holders = holders.iter().filter_map(Value::as_str).map(ToOwned::to_owned).collect();
         }
         if started.elapsed() >= wait {
             return Ok(false);
@@ -1036,6 +1052,7 @@ fn get_state(state: State<AppState>) -> Result<DesktopState, String> {
         autostart,
         connector,
         awaiting_shared_key: runtime.secrets.awaiting_shared_key,
+        key_holders: runtime.key_holders.clone(),
     })
 }
 
@@ -1173,6 +1190,7 @@ mod login_flow_tests {
                 key_account_id: None,
             },
             pending_login: Some(pending),
+            key_holders: Vec::new(),
         }));
         let (received_tx, received_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();

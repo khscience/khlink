@@ -1,6 +1,6 @@
 [package]
 name = "kh-link-desktop"
-version = "0.1.47"
+version = "0.1.50"
 edition = "2024"
 license = "Proprietary"
 

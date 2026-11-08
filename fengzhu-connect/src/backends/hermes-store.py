@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 
 HOME = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
 DB = os.path.join(HOME, "state.db")
@@ -45,8 +46,11 @@ def reset_continuations(conn):
 
 
 def is_continuation(parent, child, reason, reset_edges):
+    # Reopening an old parent may replace its original session_reset reason
+    # when that separate websocket is reaped. The canonical receipt and the
+    # real parent edge are still required; an arbitrary branch stays separate.
     return reason in ("compression", "orphaned_compression") or (
-        reason == "session_reset" and (parent, child) in reset_edges)
+        reason in ("session_reset", "ws_orphan_reap") and (parent, child) in reset_edges)
 
 
 def connect():
@@ -100,18 +104,21 @@ def lineage(conn, root, reset_edges):
 
 
 def execution_states(conn, session_ids):
-    """Read Hermes gateway's pending admissions, without their private payloads.
+    """Read gateway admissions and unexpired conversation turn leases.
 
     Newer gateways retain a started admission throughout a turn, including
     long tool calls that do not append messages. An old epoch or an unknown
-    admission is deliberately not treated as either running or completed.
-    Older Hermes stores do not have this table and keep the legacy fallback.
+    admission is deliberately not treated as either running or completed. A
+    dashboard turn can hold a lease without an admission. An abandoned lease
+    can remain visible until its TTL expires; its holder is never disclosed.
     """
     required = {"target_session_id", "status", "owner_epoch"}
-    if not required.issubset(columns(conn, "session_admissions")):
+    have_admissions = required.issubset(columns(conn, "session_admissions"))
+    have_leases = {"conversation_id", "expires_at"}.issubset(columns(conn, "session_turn_leases"))
+    if not have_admissions and not have_leases:
         return None
     epoch = None
-    if "epoch" in columns(conn, "runtime_epoch"):
+    if have_admissions and "epoch" in columns(conn, "runtime_epoch"):
         row = conn.execute("select epoch from runtime_epoch limit 1").fetchone()
         epoch = row[0] if row else None
     states = {}
@@ -120,15 +127,22 @@ def execution_states(conn, session_ids):
     for start in range(0, len(ids), 400):
         batch = ids[start:start + 400]
         marks = ",".join("?" for _ in batch)
-        rows = conn.execute(
-            "select target_session_id, status, owner_epoch from session_admissions "
-            "where target_session_id in (%s) and status in ('queued','started','unknown')" % marks,
-            batch)
-        for row in rows:
-            state = row["status"]
-            if state == "started":
-                state = "running" if epoch is not None and row["owner_epoch"] == epoch else "unknown"
-            states.setdefault(row["target_session_id"], set()).add(state)
+        if have_admissions:
+            rows = conn.execute(
+                "select target_session_id, status, owner_epoch from session_admissions "
+                "where target_session_id in (%s) and status in ('queued','started','unknown')" % marks,
+                batch)
+            for row in rows:
+                state = row["status"]
+                if state == "started":
+                    state = "running" if epoch is not None and row["owner_epoch"] == epoch else "unknown"
+                states.setdefault(row["target_session_id"], set()).add(state)
+        if have_leases:
+            rows = conn.execute(
+                "select conversation_id from session_turn_leases "
+                "where conversation_id in (%s) and expires_at>?" % marks, batch + [time.time()])
+            for row in rows:
+                states.setdefault(row["conversation_id"], set()).add("running")
     return states
 
 
@@ -163,6 +177,26 @@ def terminal_outcomes(conn, session_ids):
         for row in rows:
             result[row["target_session_id"]] = (row["seq"], row["outcome"])
     return result
+
+
+def applicable_outcome(conn, outcomes, session_id):
+    # A turn may compress into children, but a reset starts a new turn. Follow
+    # only compression ancestors so an old reset parent's outcome cannot end
+    # a newer dashboard turn while interrupted compressed turns still match.
+    seen = set()
+    relevant = []
+    current = session_id
+    while current and current not in seen:
+        seen.add(current)
+        if current in outcomes:
+            relevant.append(outcomes[current])
+        row = conn.execute(
+            "select s.parent_session_id, p.end_reason from sessions s "
+            "left join sessions p on p.id=s.parent_session_id where s.id=?", (current,)).fetchone()
+        if not row or row["end_reason"] not in ("compression", "orphaned_compression"):
+            break
+        current = row["parent_session_id"]
+    return max(relevant, key=lambda item: item[0])[1] if relevant else None
 
 
 def cmd_list():
@@ -216,7 +250,7 @@ def cmd_list():
         segs = data["segments"]
         marks = ",".join("?" for _ in segs)
         last = conn.execute(
-            "select id, role, tool_calls is not null and tool_calls<>'' and tool_calls<>'[]' as calls, timestamp "
+            "select id, session_id, role, tool_calls is not null and tool_calls<>'' and tool_calls<>'[]' as calls, timestamp "
             "from messages where session_id in (%s) order by id desc limit 1" % marks, segs).fetchone()
         data["last_message"] = dict(last) if last else None
         data["max_message_id"] = last["id"] if last else 0
@@ -224,9 +258,12 @@ def cmd_list():
         if state is not None:
             data["execution_state"] = state
         if state == "idle":
-            ended = [outcomes[sid] for sid in segs if sid in outcomes]
-            if ended:
-                data["execution_outcome"] = max(ended, key=lambda item: item[0])[1]
+            # A previous segment's failure must not overwrite a later turn
+            # that ran directly in the dashboard without an admission.
+            last_sid = last["session_id"] if last else None
+            outcome = applicable_outcome(conn, outcomes, last_sid)
+            if outcome is not None:
+                data["execution_outcome"] = outcome
         out.append(data)
     print(json.dumps({"sessions": out}, ensure_ascii=False))
 

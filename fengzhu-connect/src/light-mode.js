@@ -6,6 +6,7 @@
 // stays here, and the phone fetches it on request (history.details) and keeps
 // it. Thinking, replies, cards and statuses are unchanged.
 const fs = require('node:fs');
+const readline = require('node:readline');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
@@ -55,6 +56,9 @@ class LightMode {
     this.directoryReady = null;
     this.recentDetails = new Map();
     this.detailFiles = new Map();
+    // file -> { signature, ids: Map(row id -> content digest of its last line) }.
+    // Read from the file itself, so a restart does not forget what is saved.
+    this.diskIndex = new Map();
     this.detailCursors = new Map();
     this.detailReads = new Map();
     this.maxRecentDetails = Math.max(0, Math.min(MAX_RECENT_DETAILS, Number(maxRecentDetails) || 0));
@@ -96,7 +100,10 @@ class LightMode {
   // Keep the full encrypted row ({id, nonce, ciphertext}) for history.details.
   save(threadId, row, contentHash = null) {
     const file = this.threadFile(threadId);
-    const line = JSON.stringify({ id: row.id, nonce: row.nonce, ciphertext: row.ciphertext, threadTag: this.threadTag(threadId) }) + '\n';
+    // `h` is the caller's keyed content digest (an HMAC with the account key;
+    // it reveals nothing without that key). Kept first so a restart can find
+    // the last saved version of each row without parsing the ciphertext.
+    const line = JSON.stringify({ id: row.id, ...(contentHash ? { h: contentHash } : {}), nonce: row.nonce, ciphertext: row.ciphertext, threadTag: this.threadTag(threadId) }) + '\n';
     // Serialize per file so updates to the same id remain in order. Different
     // threads can write concurrently without blocking heartbeats or RPCs.
     const previous = this.writes.get(file) || Promise.resolve();
@@ -121,12 +128,19 @@ class LightMode {
         this.recentDetails.set(key, cached);
         return;
       }
+      // The in-memory cache is empty after a restart: every rebuild then
+      // appended the same rows again, and one thread's file grew to 14 GB
+      // (2026-11-08). Ask the file what it last saved for this row.
+      const index = contentHash ? await this.diskRows(file) : null;
+      if (index && index.get(row.id) === contentHash) return;
       try { await this.io.appendFile(file, line); }
       catch (error) {
         this.forgetRecentDetails(file);
+        this.diskIndex.delete(file);
         if (error.code === 'ENOENT') this.directoryReady = null;
         throw error;
       }
+      await this.noteDiskRow(file, row.id, contentHash);
       // Without a digest the caller may have written a newer version of any
       // row, so conservatively forget the file's cached contents.
       if (!contentHash || !this.maxRecentDetails) { this.forgetRecentDetails(file); return; }
@@ -150,6 +164,96 @@ class LightMode {
     const forget = () => { if (this.writes.get(file) === write) this.writes.delete(file); };
     write.then(forget, forget);
     return write;
+  }
+
+  // Rewrites a detail file keeping only the last line of each row (id and
+  // thread): the reader scans from the end and uses that one. Before 0.2.152
+  // every restart appended unchanged rows again; one file reached 14 GB
+  // (2026-11-08). Runs in the file's write queue, so no append interleaves.
+  compact(file) {
+    const previous = this.writes.get(file) || Promise.resolve();
+    const work = previous.catch(() => {}).then(async () => {
+      const keyOf = (line) => {
+        const id = /^\{"id":("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?)/.exec(line.slice(0, 512));
+        const tag = /"threadTag":"([0-9a-f]+)"\}\s*$/.exec(line.slice(-200));
+        return id ? `${id[1]}|${tag ? tag[1] : ''}` : null;
+      };
+      const eachLine = async (fn) => {
+        const lines = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
+        let n = 0; for await (const line of lines) fn(line, n++); return n;
+      };
+      const last = new Map();
+      const total = await eachLine((line, n) => { const key = keyOf(line); if (key) last.set(key, n); });
+      const keep = new Set(last.values());
+      if (keep.size >= total) return { before: total, after: total };
+      const temp = `${file}.compact-${process.pid}`;
+      const out = fs.createWriteStream(temp);
+      try {
+        await eachLine((line, n) => { if (keep.has(n)) out.write(line + '\n'); });
+        await new Promise((resolve, reject) => out.end((error) => (error ? reject(error) : resolve())));
+        await this.io.rename(temp, file);
+      } catch (error) {
+        out.destroy(); await this.io.rm?.(temp, { force: true }).catch(() => {});
+        throw error;
+      }
+      this.forgetRecentDetails(file);
+      this.diskIndex.delete(file);
+      for (const [key, entry] of this.detailCursors) if (entry.file === file) this.detailCursors.delete(key);
+      return { before: total, after: keep.size };
+    });
+    this.writes.set(file, work);
+    const forget = () => { if (this.writes.get(file) === work) this.writes.delete(file); };
+    work.then(forget, forget);
+    return work;
+  }
+
+  // Compacts every detail file above `minBytes`, one at a time.
+  async compactAll({ minBytes = 32 * 1024 * 1024, log = () => {} } = {}) {
+    let names = []; try { names = await this.io.readdir(this.dir); } catch { return; }
+    for (const name of names) {
+      if (!name.endsWith('.jsonl')) continue;
+      const file = path.join(this.dir, name);
+      let size = 0; try { size = (await this.io.stat(file)).size; } catch { continue; }
+      if (size < minBytes) continue;
+      try {
+        const result = await this.compact(file);
+        if (result.after < result.before) log(`light details compacted: ${name} ${result.before} -> ${result.after} rows`);
+      } catch (error) { log(error); }
+    }
+  }
+
+  // The last content digest saved for every row id in a detail file, read once
+  // and trusted while the file is unchanged since (our own appends update it).
+  async diskRows(file) {
+    let signature = null;
+    try { signature = detailFileSignature(await this.io.stat(file)); } catch { /* no file yet */ }
+    const cached = this.diskIndex.get(file);
+    if (cached && cached.signature === signature) return cached.ids;
+    const ids = new Map();
+    if (signature) {
+      const head = /^\{"id":("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?)(?:,"h":"([A-Za-z0-9+/=_-]+)")?/;
+      try {
+        const lines = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
+        for await (const line of lines) {
+          const match = head.exec(line.length > 512 ? line.slice(0, 512) : line);
+          if (!match) continue;
+          let id; try { id = JSON.parse(match[1]); } catch { continue; }
+          if (match[2]) ids.set(id, match[2]); else ids.delete(id);
+        }
+      } catch { return null; } // unreadable now: just append as before
+    }
+    this.diskIndex.set(file, { signature, ids });
+    return ids;
+  }
+
+  async noteDiskRow(file, id, contentHash) {
+    const cached = this.diskIndex.get(file);
+    if (!cached) return;
+    let signature = null;
+    try { signature = detailFileSignature(await this.io.stat(file)); } catch { /* re-read next time */ }
+    if (!signature) { this.diskIndex.delete(file); return; }
+    if (contentHash) cached.ids.set(id, contentHash); else cached.ids.delete(id);
+    cached.signature = signature;
   }
 
   details(threadId, ids) {
@@ -304,6 +408,7 @@ class LightMode {
       try {
         if (now - fs.statSync(file).mtimeMs > KEEP_DAYS * 86_400_000) {
           this.forgetRecentDetails(file);
+          this.diskIndex.delete(file);
           for (const [key, entry] of this.detailCursors) if (entry.file === file) this.detailCursors.delete(key);
           fs.rmSync(file, { force: true });
         }

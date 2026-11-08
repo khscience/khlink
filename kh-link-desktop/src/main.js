@@ -141,6 +141,15 @@ function renderAccount() {
   show('effective-badge', model.authenticated && !model.direct);
 }
 
+// A computer that joined an account waits for one of the account's other
+// computers to hand it the key. Name them, and say what to do when that
+// computer is gone (reinstalled, replaced, a throwaway sandbox).
+function waitingForKeyDetail() {
+  const names = (desktopState?.keyHolders || []).filter(Boolean);
+  const which = names.length ? `“${names.join('”、“')}”` : '账号里的另一台电脑';
+  return `正在等${which}上的 khLink 在线后交出账户密钥。如果那台电脑已经不用了，在下方“账户设备”里解除它的绑定，这台电脑会自动接管。`;
+}
+
 function renderConnector() {
   const connector = desktopState?.connector || {};
   const model = KhConnection.view(desktopState);
@@ -157,7 +166,7 @@ function renderConnector() {
   $('server-label').textContent = direct ? '设备直接通信' : '账户服务';
   $('refresh-button').textContent = model.action;
   $('connector-detail').textContent = direct ? (online ? '消息、历史和文件通过两端加密通道传输。' : model.running ? '本机后台已准备好，配对手机后开始直连。' : '点击“配对手机”准备本机后台。') :
-    model.loginRequired ? (online ? '手机后台连接仍在运行，登录桌面账户后可管理账户与设备。' : '请登录 khLink 账号，手机也使用同一账号。') : online ? (refreshError ? `桌面刷新异常：${refreshError}` : '电脑已连接账户服务，手机可同步和控制工作区。') : '点击“重新连接”恢复账户连接。';
+    model.loginRequired ? (online ? '手机后台连接仍在运行，登录桌面账户后可管理账户与设备。' : '请登录 khLink 账号，手机也使用同一账号。') : online ? (refreshError ? `桌面刷新异常：${refreshError}` : '电脑已连接账户服务，手机可同步和控制工作区。') : model.waitingForKey ? waitingForKeyDetail() : '点击“重新连接”恢复账户连接。';
   $('connector-diagnostic').textContent = model.running ? `运行中 · v${version}` : '未运行';
   $('relay-diagnostic').textContent = direct ? '直连期间停用' : online ? '已连接' : model.loginRequired ? '需要登录' : '等待连接';
   $('account-mode-button').setAttribute('aria-pressed', String(!direct));
@@ -288,7 +297,7 @@ function startConnectorPolling() {
       if (desktopState?.awaitingSharedKey && Date.now() - sharedKeyCheckedAt > 15_000) {
         sharedKeyCheckedAt = Date.now();
         const result = await invoke('ensure_connector').catch(() => null);
-        if (result && !result.keyPending) { toast('已拿到账户密钥，这台电脑开始同步'); applyDesktopState(await invoke('get_state')); }
+        if (result && !result.keyPending) { toast('账户连接已建立，这台电脑开始同步'); applyDesktopState(await invoke('get_state')); }
       }
     } catch {
       // Keep the last known state; the stale-heartbeat check will mark it offline.

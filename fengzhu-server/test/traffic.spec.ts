@@ -33,6 +33,8 @@ describe('free monthly traffic on the official relay', () => {
     state = entitlement.forAccount(free)
     expect(state.traffic!.usedBytes).toBe(110 * 1024 * 1024)
     expect(state).toMatchObject({ source: 'free', canWrite: false })
+    // The refusal says why in the user's language (older phones show it as is).
+    expect(entitlement.readOnlyMessage(state)).toContain('本月免费流量已用完')
 
     const member = database.upsertAccount({ subject: 'member-1', displayName: 'Member', disabled: false })
     database.upsertEntitlement({ accountId: member, product: 'kh_link', state: 'active', plan: 'KH Link', expiresAt: Date.now() + 86_400_000, updatedAt: Date.now() })

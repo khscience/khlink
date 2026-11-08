@@ -73,8 +73,18 @@ export class V2SessionController {
       && device.id !== body.deviceId && device.id !== `${body.deviceId}.connector`)
     const keyPending = others.length > 0 && !isDeviceKeyEnvelope(existing?.keyEnvelope)
       && (!existing || existing.keyEnvelope === KEY_PENDING || existing.publicKey !== body.publicKey)
+    // With no other computer left, this one's key becomes the account key. If
+    // it is a new holder (new installation, a revoked one coming back, or one
+    // that waited for a computer that is gone now), phones may still hold the
+    // previous computer's key: make them fetch it again.
+    const takesOver = others.length === 0 && (!existing || !!existing.revokedAt
+      || existing.publicKey !== body.publicKey || existing.keyEnvelope === KEY_PENDING)
     this.database.upsertAccountDevice({ accountId, id: body.deviceId, name: body.deviceName, type: 'desktop', publicKey: body.publicKey,
       keyEnvelope: keyPending ? KEY_PENDING : undefined })
+    if (takesOver) {
+      if (existing?.keyEnvelope === KEY_PENDING) this.database.setDeviceKeyEnvelope(accountId, body.deviceId, null)
+      this.database.resetPhoneKeys(accountId)
+    }
     this.database.updateDeviceVersion(accountId, body.deviceId, body.clientVersion)
     return {
       profile: this.database.getAccount(accountId),
@@ -108,6 +118,20 @@ export class V2SessionController {
     if (req.accountClaims.type !== 'android' && req.accountClaims.type !== 'desktop') throw new ForbiddenException('Only a phone or a joining computer fetches its key envelope')
     const device = this.database.getAccountDevice(req.accountClaims.sub, req.accountClaims.deviceId)
     if (!device || device.revokedAt) throw new ForbiddenException('Device is not registered')
+    // A joining computer waited for a computer that has since been unbound:
+    // nobody is left to hand it the key, so it keeps its own and phones are
+    // re-keyed from it.
+    if (req.accountClaims.type === 'desktop' && device.keyEnvelope === KEY_PENDING) {
+      const holders = this.database.listAccountDevices(req.accountClaims.sub).filter((other) => !other.revokedAt
+        && (other.type === 'desktop' || other.type === 'connector')
+        && other.id !== device.id && other.id !== `${device.id}.connector`)
+      if (holders.length === 0) {
+        this.database.setDeviceKeyEnvelope(req.accountClaims.sub, device.id, null)
+        this.database.resetPhoneKeys(req.accountClaims.sub)
+        return { pending: false, noKeyHolder: true }
+      }
+      return { pending: true, holders: holders.filter((other) => other.type === 'desktop').map((other) => other.name) }
+    }
     // Previously QR pairing stored a v2 envelope in the same device row. Treat
     // that legacy value as pending so the connector replaces it with v3.
     return isDeviceKeyEnvelope(device.keyEnvelope) ? { keyEnvelope: device.keyEnvelope } : { pending: true }

@@ -156,6 +156,14 @@ test('a running connector is distinct from an authenticated account or a connect
   assert.equal(switching.online, false);
 });
 
+test('a computer waiting for the shared key says so instead of asking to reconnect', () => {
+  const waiting = KhConnection.view(state({ authenticated: true, awaitingSharedKey: true, connector: {} }));
+  assert.equal(waiting.waitingForKey, true);
+  assert.equal(waiting.title, '等待另一台电脑交出密钥');
+  const online = KhConnection.view(state({ authenticated: true, awaitingSharedKey: true, connector: { connected: true, updatedAt: Date.now() } }));
+  assert.equal(online.waitingForKey, false);
+});
+
 test('unchanged device polls preserve rows, controls and announcement text', () => {
   const a = app();
   const devices = [{ id: 'phone-1', name: '测试手机', type: 'android', online: true }, { id: 'desktop-1', name: '另一台电脑', type: 'connector', online: false }];

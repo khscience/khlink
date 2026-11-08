@@ -54,6 +54,13 @@ export class EntitlementService {
     return { ...membership, source: 'free', canWrite: traffic.usedBytes < traffic.limitBytes, traffic }
   }
 
+  /** What a refused remote action tells the user (shown as is by older phones). */
+  readOnlyMessage(entitlement: KhLinkEntitlement): string {
+    return entitlement.source === 'free'
+      ? '本月免费流量已用完，远程操作暂停到下月 1 日；扫码直连不计流量，可以改用直连'
+      : '这个账号当前不能远程操作，可以改用扫码直连'
+  }
+
   private membership(entry: StoredEntitlement | undefined): KhQuantMembership {
     return entry ? { state: entry.state, plan: entry.plan, expiresAt: entry.expiresAt } : { state: 'unavailable' }
   }

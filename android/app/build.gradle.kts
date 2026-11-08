@@ -21,8 +21,8 @@ android {
         applicationId = "vip.fengzhu.bridge"
         minSdk = 24
         targetSdk = 36
-        versionCode = 332
-        versionName = "0.1.331"
+        versionCode = 334
+        versionName = "0.1.333"
         // The production phone is arm64-v8a.  WebRTC ships four native
         // architectures in its universal AAR; keeping only the device ABI
         // avoids putting unused x86/32-bit libraries in the release APK.

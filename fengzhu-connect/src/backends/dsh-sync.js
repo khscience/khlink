@@ -32,6 +32,32 @@ const BACKGROUND_READ = /(\.read|\.get|\.list|capabilities|usage)$/;
 const ACTIVE_WINDOW_MS = 3 * 60_000;
 const CONNECTOR_VERSION = require('../../package.json').version;
 const ACCOUNT_REFRESH_MS = 5 * 60_000;
+
+const DSH_BRIDGE_ROW = '# KH Link desktop bridge (managed by khLink; remove this row to disable)\n- insert:\n    - id: kh-link-dsh-bridge\n      name: kh-link-dsh-bridge\n';
+
+// The Desktop profile's cordis.patch.yml is a top-level YAML list. A fresh DSH
+// writes it as an empty flow list ("[]"); appending a block item after that is
+// invalid YAML and DSH refuses to start. Returns the text with the bridge row
+// (repairing a file an older connector broke that way), or null to leave the
+// file alone (a non-empty flow list we cannot extend safely).
+function withDshBridgeRow(text) {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  const isEmptyList = (line) => line.trim() === '[]';
+  const content = lines.filter((line) => line.trim() && !line.trim().startsWith('#'));
+  const hasRow = text.includes('id: kh-link-dsh-bridge');
+  const blockItems = content.some((line) => line.startsWith('- '));
+  if (hasRow) {
+    if (!blockItems || !lines.some(isEmptyList)) return text;
+    return lines.filter((line) => !isEmptyList(line)).join(eol);
+  }
+  let kept = lines;
+  if (content.length === 1 && isEmptyList(content[0])) kept = lines.filter((line) => !isEmptyList(line));
+  else if (content.length && content[0].trim().startsWith('[')) return null;
+  let body = kept.join(eol);
+  if (body && !body.endsWith(eol)) body += eol;
+  return `${body}${body.trim() ? eol : ''}${DSH_BRIDGE_ROW.replace(/\n/g, eol)}`;
+}
 const USAGE_SEED_MESSAGES = 800;
 
 function dayKey(now = Date.now()) {
@@ -269,9 +295,11 @@ const methods = {
     let patched = false;
     if (fs.existsSync(patch)) {
       const text = fs.readFileSync(patch, 'utf8');
-      if (!text.includes('id: kh-link-dsh-bridge')) {
-        const block = `\n# KH Link desktop bridge (managed by khLink; remove this row to disable)\n- insert:\n    - id: kh-link-dsh-bridge\n      name: kh-link-dsh-bridge\n`;
-        fs.appendFileSync(patch, block);
+      const next = withDshBridgeRow(text);
+      if (next !== null && next !== text) {
+        const temp = `${patch}.kiru-${process.pid}.tmp`;
+        fs.writeFileSync(temp, next);
+        fs.renameSync(temp, patch);
         patched = true;
       }
     }
@@ -1103,4 +1131,4 @@ function normalizeDshCwd(value) {
 
 function install(Connector) { Object.assign(Connector.prototype, methods); }
 
-module.exports = { install, methods, waitingFor, toolKind, turnStatus, threadIdOf, sessionIdOf, normalizeDshCwd, DSH_OFFLINE, DSH_BUSY };
+module.exports = { install, withDshBridgeRow, methods, waitingFor, toolKind, turnStatus, threadIdOf, sessionIdOf, normalizeDshCwd, DSH_OFFLINE, DSH_BUSY };

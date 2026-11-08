@@ -139,6 +139,11 @@ class Connector {
       },
     });
     try { this.lightMode.prune(); } catch { /* best effort */ }
+    // Shrink detail files bloated before 0.2.152 (rows re-appended on every
+    // restart), in the background once the connector has settled.
+    if (!process.env.NODE_TEST_CONTEXT) {
+      setTimeout(() => this.lightMode.compactAll({ log: (message) => (message instanceof Error ? this.log(message) : console.log(`[fengzhu-connect] ${message}`)) }).catch((error) => this.log(error)), 120_000).unref?.();
+    }
     this.backend = new CodexBackend(config); this.codex = this.backend.client;
     this.claude = new ClaudeBackend(config);
     this.backends = new Map([[this.backend.id, this.backend], [this.claude.id, this.claude]]);
@@ -4862,6 +4867,9 @@ class Connector {
       dsh: Boolean(this.dshOnline) || exists(process.env.DSH_HOME || path.join(home, '.dsh')),
       hermes: Boolean(this.hermesTransport),
       pi: Boolean(this.piOnline) || exists(path.join(home, '.pi')),
+      // Antigravity keeps its conversations under ~/.gemini/antigravity.
+      antigravity: exists(path.join(home, '.gemini', 'antigravity'))
+        || exists(path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'Programs', 'Antigravity', 'Antigravity.exe')),
     };
     this._agentInstalledAt = now;
     return this._agentInstalled;

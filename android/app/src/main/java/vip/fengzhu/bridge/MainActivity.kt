@@ -1571,7 +1571,7 @@ private fun HomeScreen(vm: BridgeViewModel) {
         direct = { accountSheet = false; vm.enterDirectPairing() },
         restoreServer = { accountSheet = false; vm.restoreServerConnection() },
         piSettings = if (threads.any { it.backend == "pi" }) ({ accountSheet = false; piProviders = true }) else null)
-    if (agentSettings) AgentVisibilityDialog(visibleAgents, agentOrder, agentStates, {
+    if (agentSettings) AgentVisibilityDialog(visibleAgents, agentOrder, agentStates, notInstalled, {
         agentSettings = false
         if (agentSettingsReturnAccount) accountSheet = true
     }) {
@@ -6441,7 +6441,7 @@ private fun homeAgentStateLabel(state: HomeAgentState) = when (state) {
 }
 
 @Composable
-private fun AgentVisibilityDialog(visible: Set<String>, order: List<String>, states: Map<String, HomeAgentState>, close: () -> Unit, save: (List<String>) -> Unit) {
+private fun AgentVisibilityDialog(visible: Set<String>, order: List<String>, states: Map<String, HomeAgentState>, notInstalled: (String) -> Boolean, close: () -> Unit, save: (List<String>) -> Unit) {
     var chosen by remember(visible, order) {
         mutableStateOf(normalizeHomeAgentOrder(order.filter { it in visible } + HOME_AGENT_IDS.filter { it in visible && it !in order }))
     }
@@ -6473,7 +6473,8 @@ private fun AgentVisibilityDialog(visible: Set<String>, order: List<String>, sta
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(homeTabLabel(id, 4), color = Ink, fontWeight = FontWeight.Medium)
-                                Text(homeAgentStateLabel(state), color = if (state == HomeAgentState.Open) P.success else Muted, style = MaterialTheme.typography.labelSmall)
+                                // The computer reports it is not installed: say so instead of a "checking" that never ends.
+                                Text(if (state != HomeAgentState.Open && notInstalled(id)) "未安装" else homeAgentStateLabel(state), color = if (state == HomeAgentState.Open) P.success else Muted, style = MaterialTheme.typography.labelSmall)
                             }
                             if (checked) {
                                 Box(Modifier.size(30.dp).clip(RoundedCornerShape(8.dp)).clickable(enabled = chosen.indexOf(id) > 0) { move(id, -1) }, contentAlignment = Alignment.Center) {

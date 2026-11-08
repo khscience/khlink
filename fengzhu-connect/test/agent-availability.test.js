@@ -112,11 +112,11 @@ test('installed agents: an empty home reports none, and the report is cached for
     delete process.env.DSH_HOME;
     const connector = Object.create(Connector.prototype);
     connector.codexMissing = true;
-    assert.deepEqual(connector.agentInstalledPayload(1_000), { codex: false, claude: false, dsh: false, hermes: false, pi: false });
+    assert.deepEqual(connector.agentInstalledPayload(1_000), { codex: false, claude: false, dsh: false, hermes: false, pi: false, antigravity: false });
     fs.mkdirSync(path.join(home, '.dsh'));
     assert.equal(connector.agentInstalledPayload(2_000).dsh, false, 'cached');
     connector.codexMissing = false;
-    assert.deepEqual(connector.agentInstalledPayload(70_000), { codex: true, claude: false, dsh: true, hermes: false, pi: false });
+    assert.deepEqual(connector.agentInstalledPayload(70_000), { codex: true, claude: false, dsh: true, hermes: false, pi: false, antigravity: false });
   } finally {
     for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     fs.rmSync(home, { recursive: true, force: true });

@@ -56,7 +56,7 @@ describe('one account, several computers', () => {
     expect(second.keyPending).toBe(true)
     expect(database.getAccountDevice(accountId, 'pc-b')?.keyEnvelope).toBe(KEY_PENDING)
     const b = reqFor({ sub: accountId, deviceId: 'pc-b', type: 'desktop' })
-    expect(controller.keyEnvelope(b)).toEqual({ pending: true })
+    expect(controller.keyEnvelope(b)).toEqual({ pending: true, holders: ['pc-a'] })
 
     // Computer A's connector sees B waiting; B never lists itself.
     const fromA = controller.pendingKeys(reqFor({ sub: accountId, deviceId: 'pc-a.connector', type: 'connector' })) as any
@@ -86,5 +86,41 @@ describe('one account, several computers', () => {
     database.revokeAccountDevice(accountId, 'pc-a')
     const next = await controller.complete(desktop('pc-b', keyB)) as any
     expect(next.keyPending).toBeUndefined()
+  })
+
+  it('a new computer that takes over after the old ones are gone re-keys the phones', async () => {
+    const first = await controller.complete(desktop('pc-a', keyA)) as any
+    const accountId = first.session.accountId
+    database.upsertAccountDevice({ accountId, id: 'pc-a.connector', name: 'A', type: 'connector' })
+    database.upsertAccountDevice({ accountId, id: 'phone-1', name: 'Phone', type: 'android', publicKey: keyB, keyEnvelope: sealed })
+
+    // The same computer logging in again leaves the phone's key alone.
+    await controller.complete(desktop('pc-a', keyA))
+    expect(database.getAccountDevice(accountId, 'phone-1')?.keyEnvelope).toBe(sealed)
+
+    database.revokeAccountDevice(accountId, 'pc-a')
+    database.revokeAccountDevice(accountId, 'pc-a.connector')
+    const next = await controller.complete(desktop('pc-c', keyA)) as any
+    expect(next.keyPending).toBeUndefined()
+    expect(database.getAccountDevice(accountId, 'phone-1')?.keyEnvelope).toBeNull()
+    expect((controller.pendingKeys(reqFor({ sub: accountId, deviceId: 'pc-c.connector', type: 'connector' })) as any).devices)
+      .toEqual([{ deviceId: 'phone-1', name: 'Phone', publicKey: keyB, type: 'android' }])
+  })
+
+  it('a computer waiting for a key takes over once the computer it waited for is unbound', async () => {
+    const first = await controller.complete(desktop('pc-a', keyA)) as any
+    const accountId = first.session.accountId
+    database.upsertAccountDevice({ accountId, id: 'pc-a.connector', name: 'A', type: 'connector' })
+    database.upsertAccountDevice({ accountId, id: 'phone-1', name: 'Phone', type: 'android', publicKey: keyB, keyEnvelope: sealed })
+    expect((await controller.complete(desktop('pc-b', keyB)) as any).keyPending).toBe(true)
+    const b = reqFor({ sub: accountId, deviceId: 'pc-b', type: 'desktop' })
+
+    database.revokeAccountDevice(accountId, 'pc-a')
+    database.revokeAccountDevice(accountId, 'pc-a.connector')
+    expect(controller.keyEnvelope(b)).toEqual({ pending: false, noKeyHolder: true })
+    expect(database.getAccountDevice(accountId, 'pc-b')?.keyEnvelope).toBeNull()
+    expect(database.getAccountDevice(accountId, 'phone-1')?.keyEnvelope).toBeNull()
+    // Logging in again later does not ask for a key any more.
+    expect((await controller.complete(desktop('pc-b', keyB)) as any).keyPending).toBeUndefined()
   })
 })

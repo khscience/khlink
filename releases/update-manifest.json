@@ -2,41 +2,41 @@
   "schemaVersion": 1,
   "channel": "stable",
   "android": {
-    "versionName": "0.1.331",
-    "versionCode": 332,
-    "url": "https://khsci.vip/fengzhu-bridge/downloads/fengzhu-codex-0.1.331.apk",
-    "sha256": "e27218913fc9d48acbb7133a3acc7535f2321592eb026709dd5417f1dc325e3f",
-    "notes": "khLink 改为完全免费，不再出售会员：官方服务器每个账号每月 300 MB 免费流量，用完后远程操作暂停到下月 1 日，khQuant VIP 会员不限流量。去掉了“开通会员”入口，“会员与续费”改为“流量说明”。新账号的 khQuant VIP 显示“未开通”。协议和隐私政策更新到 v7（2026-11-07 生效），只去掉了收费相关条款，已同意过的用户不用重新确认。",
+    "versionName": "0.1.333",
+    "versionCode": 334,
+    "url": "https://khsci.vip/fengzhu-bridge/downloads/fengzhu-codex-0.1.333.apk",
+    "sha256": "9eaf1277cf1427bfe50d94d459e13719f72c1d1f805d8a5fb1f5870815925380",
+    "notes": "免费流量用完后，手机不再弹英文报错，改为中文说明“本月免费流量已用完，远程操作暂停到下月 1 日，可以改用扫码直连”，同时刷新流量卡片，一分钟内最多提示一次。“显示与排序”里电脑上没装的智能体显示“未安装”，不再一直“检测中”。",
     "urls": [
-      "https://gcore.jsdelivr.net/gh/khscience/khlink-releases@v2026.11.06.12-dist/khLink-android-0.1.331.apk",
-      "https://github.com/khscience/khlink-releases/releases/download/v2026.11.06.12/khLink-android-0.1.331.apk",
-      "https://fastly.jsdelivr.net/gh/khscience/khlink-releases@v2026.11.06.12-dist/khLink-android-0.1.331.apk",
-      "https://cdn.jsdelivr.net/gh/khscience/khlink-releases@v2026.11.06.12-dist/khLink-android-0.1.331.apk",
-      "https://khsci.vip/fengzhu-bridge/downloads/fengzhu-codex-0.1.331.apk"
+      "https://gcore.jsdelivr.net/gh/khscience/khlink-releases@v2026.11.08.5-dist/khLink-android-0.1.333.apk",
+      "https://github.com/khscience/khlink-releases/releases/download/v2026.11.08.5/khLink-android-0.1.333.apk",
+      "https://fastly.jsdelivr.net/gh/khscience/khlink-releases@v2026.11.08.5-dist/khLink-android-0.1.333.apk",
+      "https://cdn.jsdelivr.net/gh/khscience/khlink-releases@v2026.11.08.5-dist/khLink-android-0.1.333.apk",
+      "https://khsci.vip/fengzhu-bridge/downloads/fengzhu-codex-0.1.333.apk"
     ]
   },
   "windowsConnector": {
-    "version": "0.2.151",
-    "url": "https://khsci.vip/fengzhu-bridge/downloads/fengzhu-connect-0.2.151.tgz",
-    "sha256": "ff9359cfeb728dc34e122df3bb58303d023d9dacc02ef5d4720dae1df633a0c6",
-    "notes": "反重力在运行但没有可识别的窗口时，手机上也显示“已开启”（和 Codex 只在托盘运行时一样）。",
+    "version": "0.2.154",
+    "url": "https://khsci.vip/fengzhu-bridge/downloads/fengzhu-connect-0.2.154.tgz",
+    "sha256": "350d50d8a7b51f02fba395b6ff82efe8913c3de2591204b7d213080f6ca121d3",
+    "notes": "连接器退出或热替换时，会一并关掉读取显卡负载的 nvidia-smi，不再留下长期运行的进程；向手机上报反重力是否安装，手机能显示“未安装”。",
     "urls": [
-      "https://gcore.jsdelivr.net/gh/khscience/khlink-releases@v2026.11.07.3-dist/khLink-connector-0.2.151.tgz",
-      "https://github.com/khscience/khlink-releases/releases/download/v2026.11.07.3/khLink-connector-0.2.151.tgz",
-      "https://fastly.jsdelivr.net/gh/khscience/khlink-releases@v2026.11.07.3-dist/khLink-connector-0.2.151.tgz",
-      "https://cdn.jsdelivr.net/gh/khscience/khlink-releases@v2026.11.07.3-dist/khLink-connector-0.2.151.tgz",
-      "https://khsci.vip/fengzhu-bridge/downloads/fengzhu-connect-0.2.151.tgz"
+      "https://gcore.jsdelivr.net/gh/khscience/khlink-releases@v2026.11.08.5-dist/khLink-connector-0.2.154.tgz",
+      "https://github.com/khscience/khlink-releases/releases/download/v2026.11.08.5/khLink-connector-0.2.154.tgz",
+      "https://fastly.jsdelivr.net/gh/khscience/khlink-releases@v2026.11.08.5-dist/khLink-connector-0.2.154.tgz",
+      "https://cdn.jsdelivr.net/gh/khscience/khlink-releases@v2026.11.08.5-dist/khLink-connector-0.2.154.tgz",
+      "https://khsci.vip/fengzhu-bridge/downloads/fengzhu-connect-0.2.154.tgz"
     ]
   },
   "windowsDesktop": {
-    "version": "0.1.47",
-    "url": "https://khsci.vip/fengzhu-bridge/downloads/khLink_0.1.47_x64-setup.exe",
-    "sha256": "223ad67640d1b5a19c500d8c11036853d622813a8b8acc5e68c96f3b0fcb5e6b",
-    "sizeBytes": 42915028,
-    "notes": "khLink 改为完全免费，不再出售会员：账户卡片不再显示 khLink VIP，“续费与会员”改为“流量说明”。安装程序改为中文界面。内置连接器 0.2.148。\n安装桌面一体包会重启后台连接器，请等消息发送和正在执行的任务结束后再安装。",
+    "version": "0.1.50",
+    "url": "https://khsci.vip/fengzhu-bridge/downloads/khLink_0.1.50_x64-setup.exe",
+    "sha256": "f681445a42541a401f4bb2eb08bc6ff4eb41785b2a6d5ad5c83e36551c54edcc",
+    "sizeBytes": 42911936,
+    "notes": "新电脑接管账户后的提示改为“账户连接已建立，这台电脑开始同步”。内置连接器 0.2.154。\n安装桌面一体包会重启后台连接器，请等消息发送和正在执行的任务结束后再安装。",
     "urls": [
-      "https://github.com/khscience/khlink-releases/releases/download/v2026.11.06.13/khLink-windows-0.1.47-x64-setup.exe",
-      "https://khsci.vip/fengzhu-bridge/downloads/khLink_0.1.47_x64-setup.exe"
+      "https://github.com/khscience/khlink-releases/releases/download/v2026.11.08.5/khLink-windows-0.1.50-x64-setup.exe",
+      "https://khsci.vip/fengzhu-bridge/downloads/khLink_0.1.50_x64-setup.exe"
     ]
   },
   "minimumProtocolVersion": 1

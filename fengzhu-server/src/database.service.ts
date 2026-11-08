@@ -386,6 +386,17 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     this.db.prepare('DELETE FROM account_devices_v2 WHERE account_id=? AND id IN (?,?)').run(accountId, deviceId, `${deviceId}.connector`)
   }
 
+  setDeviceKeyEnvelope(accountId: string, deviceId: string, keyEnvelope: string | null): void {
+    this.db.prepare('UPDATE account_devices_v2 SET key_envelope=? WHERE account_id=? AND id=?').run(keyEnvelope, accountId, deviceId)
+  }
+
+  // The account key changed hands (a new computer took over after every older
+  // one was gone): phones drop their wrapped copy so the connector wraps the
+  // current key to them again.
+  resetPhoneKeys(accountId: string): void {
+    this.db.prepare("UPDATE account_devices_v2 SET key_envelope=NULL WHERE account_id=? AND type='android' AND revoked_at IS NULL").run(accountId)
+  }
+
   revokeAccountDevice(accountId: string, deviceId: string): void {
     this.db.prepare(`UPDATE account_devices_v2 SET revoked_at=?,refresh_hash=NULL,refresh_expires_at=NULL
       WHERE account_id=? AND id=?`).run(Date.now(), accountId, deviceId)

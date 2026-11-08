@@ -3610,6 +3610,38 @@ class BridgeRepository(private val context: Context) {
             handleFrame(JSONObject(text), source != "replay")
         } catch (error: Exception) {
             Log.e(LOG_TAG, "ignored invalid $source frame", error)
+            noteFrameDecryptFailure(error)
+        }
+    }
+
+    // The account key moved to another computer (every older computer was
+    // unbound and a new one took over), so frames from it no longer decrypt.
+    // The relay dropped this phone's wrapped key and the new computer's
+    // connector wraps its key within seconds: fetch it and switch over,
+    // instead of showing "connecting to the computer" forever.
+    @Volatile private var accountKeyRefreshAt = 0L
+    @Volatile private var readOnlyNoticeAt = 0L
+    private fun noteFrameDecryptFailure(error: Exception) {
+        val decryptFailed = error is javax.crypto.AEADBadTagException || error.message?.contains("Authentication failed") == true
+        if (!decryptFailed || BuildConfig.DEMO || directMode()) return
+        val accountId = crypto.accountId() ?: return
+        val now = System.currentTimeMillis()
+        if (now - accountKeyRefreshAt < ACCOUNT_KEY_REFRESH_INTERVAL_MS) return
+        accountKeyRefreshAt = now
+        scope.launch {
+            try {
+                val sealed = get("/api/v2/session/key-envelope").optString("keyEnvelope").takeIf { it.isNotBlank() } ?: return@launch
+                val fresh = crypto.unwrapDeviceKeyEnvelope(accountId, crypto.deviceId(), sealed)
+                val current = crypto.accountKey()
+                if (current != null && MessageDigest.isEqual(current, fresh)) { fresh.fill(0); return@launch }
+                Log.i(LOG_TAG, "the computer uses a new account key; switching to it")
+                disconnect(); resetSessionView()
+                try { crypto.saveAccountKey(fresh) } finally { fresh.fill(0) }
+                connect()
+            } catch (refreshError: Exception) {
+                if (refreshError is CancellationException) throw refreshError
+                Log.w(LOG_TAG, "account key refresh failed", refreshError)
+            }
         }
     }
 
@@ -3622,12 +3654,26 @@ class BridgeRepository(private val context: Context) {
                 "ignored invalid $source frame kind=${frame.optString("kind", "-")} sequence=${frame.optLong("sequence")}",
                 error,
             )
+            noteFrameDecryptFailure(error)
         }
     }
 
     private fun handleFrame(frame: JSONObject, logFrame: Boolean = true) {
         if (frame.has("type")) {
-            if (frame.optString("type") == "error") _message.value = frame.optString("message", "请求失败")
+            if (frame.optString("type") == "error") {
+                if (frame.optString("code") == "membership_read_only") {
+                    // The relay refused a remote action (a used-up free month):
+                    // refresh the account so the usage card and read-only state
+                    // catch up, say why in Chinese, and only once a minute.
+                    val now = System.currentTimeMillis()
+                    if (now - readOnlyNoticeAt < 60_000) return
+                    readOnlyNoticeAt = now
+                    scope.launch {
+                        runCatching { refreshAccount() }
+                        _message.value = readOnlyReason()
+                    }
+                } else _message.value = frame.optString("message", "请求失败")
+            }
             return
         }
         // Direct connections start a fresh, ordered channel on every QR pair.
@@ -4927,6 +4973,7 @@ class BridgeRepository(private val context: Context) {
         const val SEND_ACK_TIMEOUT_MS = 30_000L
         const val PAIRING_FALLBACK_TIMEOUT_MS = 10 * 60_000L
         const val KEY_WAIT_TIMEOUT_MS = 3 * 60_000L
+        const val ACCOUNT_KEY_REFRESH_INTERVAL_MS = 15_000L
     }
 
     private fun replaceFollowups(rows: org.json.JSONArray, sourceConnector: String? = null) {

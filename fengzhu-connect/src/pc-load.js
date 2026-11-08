@@ -60,6 +60,12 @@ class PcLoad {
     this.gpuChild = child;
     // A helper process must not keep Node alive on its own (tests, shutdown).
     child.unref?.(); child.stdout?.unref?.();
+    // A reload or crash leaves through process.exit without stop(); on Windows
+    // the child then outlives us (one ran for two days). Kill it on any exit.
+    if (!this.exitHook) {
+      this.exitHook = () => { try { this.gpuChild?.kill(); } catch { /* gone */ } };
+      process.once('exit', this.exitHook);
+    }
     let buffer = '';
     child.stdout?.setEncoding?.('utf8');
     child.stdout?.on('data', (chunk) => {
@@ -85,6 +91,7 @@ class PcLoad {
     clearInterval(this.timer); this.timer = null;
     try { this.gpuChild?.kill(); } catch { /* gone */ }
     this.gpuChild = null;
+    if (this.exitHook) { process.removeListener('exit', this.exitHook); this.exitHook = null; }
   }
 
   /** Latest sample for the phone; null before the first one. GPU null without an NVIDIA GPU. */

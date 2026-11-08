@@ -453,3 +453,52 @@ test('large searches are coalesced and another large scan waits without blocking
   assert.equal((await first)[0].id, 'a');
   assert.equal((await light.details('big', ['b']))[0].id, 'b');
 });
+
+test('a restart does not append the same details again (the file grew to 14 GB on 2026-11-08)', async (t) => {
+  await ready();
+  const dir = home(t);
+  const run = async (value) => {
+    const lightMode = new LightMode(dir); lightMode.set(true); // a fresh connector process
+    const connector = { config: { accountKey: key }, lightMode, log() {} };
+    await Connector.prototype.historyItemFrame.call(connector, 'th', 'row', value);
+    await Connector.prototype.historyItemFrame.call(connector, 'th', 'other', { ...command, text: 'second row' });
+    return lightMode;
+  };
+  const lines = async (lightMode) => (await fs.promises.readFile(lightMode.threadFile('th'), 'utf8')).trim().split('\n');
+  let lightMode = await run(command);
+  assert.equal((await lines(lightMode)).length, 2);
+  for (let restart = 0; restart < 3; restart += 1) lightMode = await run(command);
+  assert.equal((await lines(lightMode)).length, 2, 'unchanged rows are not written again after a restart');
+  lightMode = await run({ ...command, text: 'changed after restart' });
+  assert.equal((await lines(lightMode)).length, 3);
+  assert.equal(open('th', 'row', (await lightMode.details('th', ['row']))[0]).text, 'changed after restart');
+  // A row written by an older connector (no digest) is written once more, then stays.
+  const legacy = new LightMode(home(t)); legacy.set(true);
+  const old = JSON.parse((await lines(lightMode))[0]); delete old.h;
+  await fs.promises.mkdir(legacy.dir, { recursive: true });
+  await fs.promises.writeFile(legacy.threadFile('th'), JSON.stringify(old) + '\n');
+  const again = async () => { const l = new LightMode(path.dirname(legacy.dir)); l.set(true); await Connector.prototype.historyItemFrame.call({ config: { accountKey: key }, lightMode: l, log() {} }, 'th', 'row', command); return l; };
+  await again(); await again();
+  assert.equal((await lines(legacy)).length, 2);
+});
+
+test('compaction keeps the last copy of each row per thread and the details still read back', async (t) => {
+  await ready();
+  const lightMode = new LightMode(home(t)); lightMode.set(true);
+  const connector = { config: { accountKey: key }, lightMode, log() {} };
+  const frame = (id, value) => Connector.prototype.historyItemFrame.call(connector, 'th', id, value);
+  await frame('a', command); await frame('b', { ...command, text: 'b1' });
+  const file = lightMode.threadFile('th');
+  const original = await fs.promises.readFile(file, 'utf8');
+  await fs.promises.appendFile(file, original + original); // what old connectors did on restart
+  await frame('b', { ...command, text: 'b2' });
+  assert.equal((await fs.promises.readFile(file, 'utf8')).trim().split('\n').length, 7);
+  const result = await lightMode.compact(file);
+  assert.deepEqual(result, { before: 7, after: 2 });
+  assert.equal(open('th', 'a', (await lightMode.details('th', ['a']))[0]).text, command.text);
+  assert.equal(open('th', 'b', (await lightMode.details('th', ['b']))[0]).text, 'b2');
+  await frame('b', { ...command, text: 'b2' });
+  assert.equal((await fs.promises.readFile(file, 'utf8')).trim().split('\n').length, 2, 'no re-append after compaction');
+  await lightMode.compactAll({ minBytes: 0 });
+  assert.equal((await fs.promises.readFile(file, 'utf8')).trim().split('\n').length, 2);
+});

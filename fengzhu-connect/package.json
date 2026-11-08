@@ -1,6 +1,6 @@
 {
   "name": "fengzhu-connect",
-  "version": "0.2.151",
+  "version": "0.2.154",
   "private": true,
   "type": "commonjs",
   "files": ["src", "scripts", "native", "dsh-bridge", "bin/fengzhu-desktop-adapter-v2.1-0.2.121-composer.exe", "bin/khlink-claude-desktop-native-v1.dll"],

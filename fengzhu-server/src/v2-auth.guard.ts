@@ -24,9 +24,8 @@ export class V2WriteGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<V2Request>()
     if (!request.accountClaims) throw new UnauthorizedException('Missing account claims')
-    if (!this.entitlement.forAccount(request.accountClaims.sub).canWrite) {
-      throw new ForbiddenException('KH Link membership is read-only')
-    }
+    const entitlement = this.entitlement.forAccount(request.accountClaims.sub)
+    if (!entitlement.canWrite) throw new ForbiddenException(this.entitlement.readOnlyMessage(entitlement))
     return true
   }
 }
