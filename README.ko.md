@@ -60,7 +60,7 @@ AI 코딩 에이전트는 한 번 돌면 십여 분씩 걸리고, 중간중간 �
 - **턴별 사용량**: 답변 아래에 이번 턴에 쓴 토큰을 표시하고, 각 에이전트의 사용 한도도 볼 수 있습니다.
 - **여러 대의 PC**: 계정 하나에 Windows PC 여러 대를 연결할 수 있습니다. 세션은 PC별로 나뉘고, 홈 화면에서 한 번에 전환합니다.
 - **라이트 모드**: 긴 도구 출력과 스크린샷은 PC에 두고 보고 싶을 때만 가져와서 모바일 데이터를 아낍니다.
-- **네 가지 테마**: 메신저 스타일, Codex 스타일, 기본, 미니멀. 앱을 처음 설치할 때 안내 화면에서 바로 써 볼 수 있고, 나중에 언제든 바꿀 수 있습니다.
+- **네 가지 테마**: 기본, Codex 스타일, 미니멀, 메신저 스타일. 아래 [테마 소개](#네-가지-테마)를 참고하세요.
 
 ## 스크린샷
 
@@ -68,16 +68,59 @@ AI 코딩 에이전트는 한 번 돌면 십여 분씩 걸리고, 중간중간 �
   <tr>
     <td width="33%"><img src="docs/screenshots/phone-sessions.png" alt="휴대폰의 세션 목록" /></td>
     <td width="33%"><img src="docs/screenshots/phone-chat.png" alt="휴대폰에서의 대화" /></td>
-    <td width="33%"><img src="docs/screenshots/phone-login.png" alt="로그인: khLink 계정, QR 코드 또는 내 서버" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-steps.png" alt="펼친 작업 과정" /></td>
   </tr>
   <tr>
-    <td align="center">모든 세션과 실시간 상태</td>
-    <td align="center">코드, 이미지, 파일까지</td>
-    <td align="center">세 가지 연결 방식 중 선택</td>
+    <td align="center"><b>세션 목록</b><br/>모든 세션과 실시간 상태, 처리할 것이 위에 표시</td>
+    <td align="center"><b>대화</b><br/>코드, 목록, 파일 경로도 깔끔하게</td>
+    <td align="center"><b>작업 과정</b><br/>실행한 명령과 바뀐 파일을 펼쳐서 확인</td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="docs/screenshots/phone-question.png" alt="휴대폰에서 에이전트의 질문에 답하기" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-approval.png" alt="휴대폰에서 명령 승인하기" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-settings.png" alt="모델과 추론 강도 설정" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>질문에 답하기</b><br/>PC와 같은 선택지를 한 번 탭해서 전송</td>
+    <td align="center"><b>명령 승인</b><br/>무엇을 할지 확인하고 허용 또는 거부</td>
+    <td align="center"><b>실행 설정</b><br/>모델, 추론 강도, 권한 모드를 PC와 동기화</td>
   </tr>
 </table>
 
 <img src="docs/screenshots/desktop.png" alt="khLink 데스크톱 콘솔" width="100%" />
+
+<p align="center"><sub>PC의 데스크톱 콘솔: 계정, 데이터 사용량, 연결된 기기와 에이전트 사용량.</sub></p>
+
+## 네 가지 테마
+
+기능은 같고 모양만 네 가지입니다. 앱을 처음 설치할 때 안내 화면에서 고르고, 나중에 **설정 → 테마**에서 언제든 바꿀 수 있습니다.
+
+<table>
+  <tr>
+    <th width="25%">기본</th>
+    <th width="25%">Codex 스타일</th>
+    <th width="25%">미니멀</th>
+    <th width="25%">메신저 스타일</th>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/theme-default-list.png" alt="기본 테마의 세션 목록" /></td>
+    <td><img src="docs/screenshots/theme-codex-list.png" alt="Codex 스타일 테마의 세션 목록" /></td>
+    <td><img src="docs/screenshots/theme-minimal-list.png" alt="미니멀 테마의 세션 목록" /></td>
+    <td><img src="docs/screenshots/theme-chat-list.png" alt="메신저 스타일 테마의 세션 목록" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/theme-default-chat.png" alt="기본 테마의 대화" /></td>
+    <td><img src="docs/screenshots/theme-codex-chat.png" alt="Codex 스타일 테마의 대화" /></td>
+    <td><img src="docs/screenshots/theme-minimal-chat.png" alt="미니멀 테마의 대화" /></td>
+    <td><img src="docs/screenshots/theme-chat-chat.png" alt="메신저 스타일 테마의 대화" /></td>
+  </tr>
+  <tr>
+    <td align="center">따뜻한 흰 바탕에 블루그레이와 앰버 포인트</td>
+    <td align="center">밝은 작업 공간, 파란 메시지, 간결한 작업 과정</td>
+    <td align="center">흑백과 회색, 카드 없음: 평평한 목록과 문서형 대화</td>
+    <td align="center">익숙한 메신저처럼: 하단 탭, 프로필 목록, 초록 말풍선</td>
+  </tr>
+</table>
 
 ## 시작하기
 

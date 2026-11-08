@@ -60,7 +60,7 @@ AI コーディングエージェントは一度動くと十数分かかり、�
 - **ターンごとの消費量**：返信の下にそのターンで使ったトークン数を表示し、各エージェントの利用枠も確認できます。
 - **複数の PC**：1 つのアカウントに複数の Windows PC をつなげます。セッションは PC ごとに分かれ、ホーム画面からワンタップで切り替えられます。
 - **ライトモード**：長いツール出力やスクリーンショットは PC に残し、見たいときだけ取得します。モバイル通信量を節約できます。
-- **4 つのテーマ**：チャットアプリ風、Codex 風、デフォルト、ミニマル。アプリを入れた直後のガイドで試せて、あとからいつでも変えられます。
+- **4 つのテーマ**：デフォルト、Codex 風、ミニマル、チャットアプリ風。下の[テーマ紹介](#4-つのテーマ)を見てください。
 
 ## スクリーンショット
 
@@ -68,16 +68,59 @@ AI コーディングエージェントは一度動くと十数分かかり、�
   <tr>
     <td width="33%"><img src="docs/screenshots/phone-sessions.png" alt="スマホのセッション一覧" /></td>
     <td width="33%"><img src="docs/screenshots/phone-chat.png" alt="スマホでの会話" /></td>
-    <td width="33%"><img src="docs/screenshots/phone-login.png" alt="サインイン：khLink アカウント、QR コード、自分のサーバー" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-steps.png" alt="展開した操作の記録" /></td>
   </tr>
   <tr>
-    <td align="center">全セッションとリアルタイムの状態</td>
-    <td align="center">コード、画像、ファイルも見られる</td>
-    <td align="center">3 つの接続方法から選べる</td>
+    <td align="center"><b>セッション一覧</b><br/>全セッションとリアルタイムの状態。対応待ちが上に並びます</td>
+    <td align="center"><b>会話</b><br/>コード、リスト、ファイルパスも見やすく</td>
+    <td align="center"><b>操作の記録</b><br/>実行したコマンドや変更したファイルをタップで確認</td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="docs/screenshots/phone-question.png" alt="スマホでエージェントの質問に答える" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-approval.png" alt="スマホでコマンドを承認する" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-settings.png" alt="モデルと推論の強さの設定" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>質問に答える</b><br/>PC と同じ選択肢を、タップひとつで送信</td>
+    <td align="center"><b>コマンドを承認</b><br/>何をするか確かめてから、許可か拒否</td>
+    <td align="center"><b>実行設定</b><br/>モデル、推論の強さ、権限モードを PC と同期</td>
   </tr>
 </table>
 
 <img src="docs/screenshots/desktop.png" alt="khLink デスクトップコンソール" width="100%" />
+
+<p align="center"><sub>PC のデスクトップコンソール：アカウント、通信量、接続中のデバイス、エージェントの使用量。</sub></p>
+
+## 4 つのテーマ
+
+機能は同じで、見た目が 4 種類。アプリを入れた直後のガイドで選べて、あとから **設定 → テーマ** でいつでも変えられます。
+
+<table>
+  <tr>
+    <th width="25%">デフォルト</th>
+    <th width="25%">Codex 風</th>
+    <th width="25%">ミニマル</th>
+    <th width="25%">チャットアプリ風</th>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/theme-default-list.png" alt="デフォルトテーマのセッション一覧" /></td>
+    <td><img src="docs/screenshots/theme-codex-list.png" alt="Codex 風テーマのセッション一覧" /></td>
+    <td><img src="docs/screenshots/theme-minimal-list.png" alt="ミニマルテーマのセッション一覧" /></td>
+    <td><img src="docs/screenshots/theme-chat-list.png" alt="チャットアプリ風テーマのセッション一覧" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/theme-default-chat.png" alt="デフォルトテーマの会話" /></td>
+    <td><img src="docs/screenshots/theme-codex-chat.png" alt="Codex 風テーマの会話" /></td>
+    <td><img src="docs/screenshots/theme-minimal-chat.png" alt="ミニマルテーマの会話" /></td>
+    <td><img src="docs/screenshots/theme-chat-chat.png" alt="チャットアプリ風テーマの会話" /></td>
+  </tr>
+  <tr>
+    <td align="center">温かみのある白に、ブルーグレーとアンバーの差し色</td>
+    <td align="center">明るいワークスペース、青いメッセージ、コンパクトな操作の記録</td>
+    <td align="center">白黒グレーだけ、カードなし：フラットな一覧とドキュメント風の会話</td>
+    <td align="center">おなじみのチャットアプリ風：下部ナビ、アイコン付き一覧、緑の吹き出し</td>
+  </tr>
+</table>
 
 ## はじめかた
 

@@ -60,7 +60,7 @@ AI 编程智能体一跑就是十几分钟，中间时不时停下来：要你�
 - **每轮消耗**：回复下面显示这一轮用掉的 Token，也能看各智能体的额度。
 - **多台电脑**：一个账号接几台 Windows 电脑，会话按电脑分开，首页一点就能切换。
 - **轻量模式**：大段工具输出和截图留在电脑上，想看再取，手机流量省得住。
-- **四种主题**：聊天软件、Codex 风格、默认、极简。新装 App 的引导里就能试，之后随时换。
+- **四种主题**：默认、Codex 风格、极简、聊天软件，见下面的[主题展示](#四种主题)。
 
 ## 截图
 
@@ -68,16 +68,59 @@ AI 编程智能体一跑就是十几分钟，中间时不时停下来：要你�
   <tr>
     <td width="33%"><img src="docs/screenshots/phone-sessions.png" alt="手机上的会话列表" /></td>
     <td width="33%"><img src="docs/screenshots/phone-chat.png" alt="手机上的一段对话" /></td>
-    <td width="33%"><img src="docs/screenshots/phone-login.png" alt="登录：khLink 账号、扫码或自己的服务器" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-steps.png" alt="展开的操作过程" /></td>
   </tr>
   <tr>
-    <td align="center">所有会话和实时状态</td>
-    <td align="center">代码、图片、文件都能看</td>
-    <td align="center">三种连接方式任选</td>
+    <td align="center"><b>会话列表</b><br/>所有会话和实时状态，等你处理的排在前面</td>
+    <td align="center"><b>对话</b><br/>代码、列表、文件路径都排得清楚</td>
+    <td align="center"><b>操作过程</b><br/>命令、改动的文件，展开就能看</td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="docs/screenshots/phone-question.png" alt="在手机上回答智能体的提问" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-approval.png" alt="在手机上批准一条命令" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-settings.png" alt="模型和思考强度设置" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>回答提问</b><br/>选项和电脑上一样，点一下就送达</td>
+    <td align="center"><b>批准命令</b><br/>看清要做什么，再允许或拒绝</td>
+    <td align="center"><b>运行设置</b><br/>模型、推理强度和权限模式，与电脑同步</td>
   </tr>
 </table>
 
 <img src="docs/screenshots/desktop.png" alt="khLink 桌面控制台" width="100%" />
+
+<p align="center"><sub>电脑上的桌面控制台：账号、流量、已连接的设备和智能体用量。</sub></p>
+
+## 四种主题
+
+同一套功能，四种样子。新装 App 的引导里就能挑，之后在 **设置 → 主题** 随时换。
+
+<table>
+  <tr>
+    <th width="25%">默认</th>
+    <th width="25%">Codex 风格</th>
+    <th width="25%">极简</th>
+    <th width="25%">聊天软件</th>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/theme-default-list.png" alt="默认主题的会话列表" /></td>
+    <td><img src="docs/screenshots/theme-codex-list.png" alt="Codex 风格主题的会话列表" /></td>
+    <td><img src="docs/screenshots/theme-minimal-list.png" alt="极简主题的会话列表" /></td>
+    <td><img src="docs/screenshots/theme-chat-list.png" alt="聊天软件主题的会话列表" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/theme-default-chat.png" alt="默认主题的对话" /></td>
+    <td><img src="docs/screenshots/theme-codex-chat.png" alt="Codex 风格主题的对话" /></td>
+    <td><img src="docs/screenshots/theme-minimal-chat.png" alt="极简主题的对话" /></td>
+    <td><img src="docs/screenshots/theme-chat-chat.png" alt="聊天软件主题的对话" /></td>
+  </tr>
+  <tr>
+    <td align="center">暖白底色，蓝灰与琥珀点缀</td>
+    <td align="center">浅色工作区、蓝色消息和紧凑的操作过程</td>
+    <td align="center">黑白灰，没有卡片：平铺的列表和文档式对话</td>
+    <td align="center">像常用的聊天软件：底部导航、头像列表、绿色气泡</td>
+  </tr>
+</table>
 
 ## 开始使用
 

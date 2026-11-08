@@ -60,7 +60,7 @@ AI 程式設計代理一跑就是十幾分鐘，中間不時停下來：要你�
 - **每輪用量**：回覆下方顯示這一輪用掉的 Token，也能查看各代理的額度。
 - **多台電腦**：一個帳號連接多台 Windows 電腦，工作階段依電腦分開，在首頁點一下就能切換。
 - **輕量模式**：大段工具輸出和截圖留在電腦上，想看再取，省下行動數據。
-- **四種主題**：聊天軟體、Codex 風格、預設、極簡。新安裝 App 的引導裡就能試用，之後隨時可換。
+- **四種主題**：預設、Codex 風格、極簡、聊天軟體，見下方的[主題展示](#四種主題)。
 
 ## 截圖
 
@@ -68,16 +68,59 @@ AI 程式設計代理一跑就是十幾分鐘，中間不時停下來：要你�
   <tr>
     <td width="33%"><img src="docs/screenshots/phone-sessions.png" alt="手機上的工作階段列表" /></td>
     <td width="33%"><img src="docs/screenshots/phone-chat.png" alt="手機上的一段對話" /></td>
-    <td width="33%"><img src="docs/screenshots/phone-login.png" alt="登入：khLink 帳號、掃碼或自己的伺服器" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-steps.png" alt="展開的操作過程" /></td>
   </tr>
   <tr>
-    <td align="center">所有工作階段與即時狀態</td>
-    <td align="center">程式碼、圖片、檔案都能看</td>
-    <td align="center">三種連線方式任選</td>
+    <td align="center"><b>工作階段列表</b><br/>所有工作階段與即時狀態，等你處理的排在前面</td>
+    <td align="center"><b>對話</b><br/>程式碼、清單、檔案路徑都排得清楚</td>
+    <td align="center"><b>操作過程</b><br/>指令、改動的檔案，展開就能看</td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="docs/screenshots/phone-question.png" alt="在手機上回答智慧體的提問" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-approval.png" alt="在手機上核准一條指令" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-settings.png" alt="模型與推理強度設定" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>回答提問</b><br/>選項和電腦上一樣，點一下就送達</td>
+    <td align="center"><b>核准指令</b><br/>看清要做什麼，再允許或拒絕</td>
+    <td align="center"><b>執行設定</b><br/>模型、推理強度和權限模式，與電腦同步</td>
   </tr>
 </table>
 
 <img src="docs/screenshots/desktop.png" alt="khLink 桌面主控台" width="100%" />
+
+<p align="center"><sub>電腦上的桌面主控台：帳號、流量、已連線的裝置和智慧體用量。</sub></p>
+
+## 四種主題
+
+同一套功能，四種樣子。新安裝 App 的引導裡就能挑，之後在 **設定 → 主題** 隨時換。
+
+<table>
+  <tr>
+    <th width="25%">預設</th>
+    <th width="25%">Codex 風格</th>
+    <th width="25%">極簡</th>
+    <th width="25%">聊天軟體</th>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/theme-default-list.png" alt="預設主題的工作階段列表" /></td>
+    <td><img src="docs/screenshots/theme-codex-list.png" alt="Codex 風格主題的工作階段列表" /></td>
+    <td><img src="docs/screenshots/theme-minimal-list.png" alt="極簡主題的工作階段列表" /></td>
+    <td><img src="docs/screenshots/theme-chat-list.png" alt="聊天軟體主題的工作階段列表" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/theme-default-chat.png" alt="預設主題的對話" /></td>
+    <td><img src="docs/screenshots/theme-codex-chat.png" alt="Codex 風格主題的對話" /></td>
+    <td><img src="docs/screenshots/theme-minimal-chat.png" alt="極簡主題的對話" /></td>
+    <td><img src="docs/screenshots/theme-chat-chat.png" alt="聊天軟體主題的對話" /></td>
+  </tr>
+  <tr>
+    <td align="center">暖白底色，藍灰與琥珀點綴</td>
+    <td align="center">淺色工作區、藍色訊息和緊湊的操作過程</td>
+    <td align="center">黑白灰，沒有卡片：平鋪的列表和文件式對話</td>
+    <td align="center">像常用的聊天軟體：底部導覽、頭像列表、綠色氣泡</td>
+  </tr>
+</table>
 
 ## 開始使用
 

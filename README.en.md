@@ -60,7 +60,7 @@ AI coding agents run for ten minutes or more at a time and keep stopping along t
 - **Per-turn usage**: the tokens a turn used appear under the reply, and you can check each agent's quota.
 - **Several PCs**: one account can connect several Windows PCs, with sessions kept apart per PC; switch with one tap on the home screen.
 - **Light mode**: long tool output and screenshots stay on the PC until you ask for them, which saves mobile data.
-- **Four themes**: Chat app, Codex style, Default and Minimal. Try them in the setup guide of a fresh install, and switch any time later.
+- **Four themes**: Default, Codex style, Minimal and Chat app; see the [theme showcase](#four-themes) below.
 
 ## Screenshots
 
@@ -68,16 +68,59 @@ AI coding agents run for ten minutes or more at a time and keep stopping along t
   <tr>
     <td width="33%"><img src="docs/screenshots/phone-sessions.png" alt="Sessions on the phone" /></td>
     <td width="33%"><img src="docs/screenshots/phone-chat.png" alt="A conversation on the phone" /></td>
-    <td width="33%"><img src="docs/screenshots/phone-login.png" alt="Sign-in: khLink account, QR code or your own server" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-steps.png" alt="Expanded steps" /></td>
   </tr>
   <tr>
-    <td align="center">Every session, live status</td>
-    <td align="center">Code, images and files</td>
-    <td align="center">Pick how to connect</td>
+    <td align="center"><b>Sessions</b><br/>Every session with live status; the ones waiting for you come first</td>
+    <td align="center"><b>Conversation</b><br/>Code, lists and file paths laid out clearly</td>
+    <td align="center"><b>Steps</b><br/>Commands and changed files, a tap away</td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="docs/screenshots/phone-question.png" alt="Answering an agent question on the phone" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-approval.png" alt="Approving a command on the phone" /></td>
+    <td width="33%"><img src="docs/screenshots/phone-settings.png" alt="Model and reasoning settings" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Answer questions</b><br/>The same options as on the PC, sent with one tap</td>
+    <td align="center"><b>Approve commands</b><br/>See exactly what it will do, then allow or deny</td>
+    <td align="center"><b>Run settings</b><br/>Model, reasoning effort and permission mode, synced with the PC</td>
   </tr>
 </table>
 
 <img src="docs/screenshots/desktop.png" alt="The khLink desktop console" width="100%" />
+
+<p align="center"><sub>The desktop console on the PC: account, data usage, connected devices and agent usage.</sub></p>
+
+## Four themes
+
+Same features, four looks. Pick one in the setup guide of a fresh install, and switch any time under **Settings → Theme**.
+
+<table>
+  <tr>
+    <th width="25%">Default</th>
+    <th width="25%">Codex style</th>
+    <th width="25%">Minimal</th>
+    <th width="25%">Chat app</th>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/theme-default-list.png" alt="Session list in the Default theme" /></td>
+    <td><img src="docs/screenshots/theme-codex-list.png" alt="Session list in the Codex style theme" /></td>
+    <td><img src="docs/screenshots/theme-minimal-list.png" alt="Session list in the Minimal theme" /></td>
+    <td><img src="docs/screenshots/theme-chat-list.png" alt="Session list in the Chat app theme" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/theme-default-chat.png" alt="Conversation in the Default theme" /></td>
+    <td><img src="docs/screenshots/theme-codex-chat.png" alt="Conversation in the Codex style theme" /></td>
+    <td><img src="docs/screenshots/theme-minimal-chat.png" alt="Conversation in the Minimal theme" /></td>
+    <td><img src="docs/screenshots/theme-chat-chat.png" alt="Conversation in the Chat app theme" /></td>
+  </tr>
+  <tr>
+    <td align="center">Warm white with slate blue and amber accents</td>
+    <td align="center">Light workspace, blue messages and compact steps</td>
+    <td align="center">Black, white and grey, no cards: flat lists and document-style chats</td>
+    <td align="center">Like a familiar chat app: bottom tabs, avatar list, green bubbles</td>
+  </tr>
+</table>
 
 ## Getting started
 
