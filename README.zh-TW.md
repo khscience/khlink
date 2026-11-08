@@ -322,7 +322,7 @@ cd desktop-adapter && cargo test
 
 ## 致謝
 
-khLink 由 [Linco Bridge](https://github.com/lincotalk/linco-bridge)（MIT）發展而來，保留了它的版權聲明。本專案以 [Tauri](https://tauri.app)、[NestJS](https://nestjs.com)、[Jetpack Compose](https://developer.android.com/compose)、[libsodium](https://libsodium.org) 和 [werift](https://github.com/shinyoshiaki/werift-webrtc) 打造。
+khLink 以 [Tauri](https://tauri.app)、[NestJS](https://nestjs.com)、[Jetpack Compose](https://developer.android.com/compose)、[libsodium](https://libsodium.org) 和 [werift](https://github.com/shinyoshiaki/werift-webrtc) 打造。
 
 <div align="center">
 

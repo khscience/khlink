@@ -324,7 +324,7 @@ cd desktop-adapter && cargo test
 
 ## 감사의 말
 
-khLink는 [Linco Bridge](https://github.com/lincotalk/linco-bridge)(MIT)에서 발전했으며 그 저작권 고지를 유지합니다. [Tauri](https://tauri.app), [NestJS](https://nestjs.com), [Jetpack Compose](https://developer.android.com/compose), [libsodium](https://libsodium.org), [werift](https://github.com/shinyoshiaki/werift-webrtc)로 만들어졌습니다.
+khLink는 [Tauri](https://tauri.app), [NestJS](https://nestjs.com), [Jetpack Compose](https://developer.android.com/compose), [libsodium](https://libsodium.org), [werift](https://github.com/shinyoshiaki/werift-webrtc)로 만들어졌습니다.
 
 <div align="center">
 

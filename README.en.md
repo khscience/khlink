@@ -322,7 +322,7 @@ Issues and PRs are welcome; please read [CONTRIBUTING.md](CONTRIBUTING.md) first
 
 ## Acknowledgements
 
-khLink grew out of [Linco Bridge](https://github.com/lincotalk/linco-bridge) (MIT), whose copyright notice is kept. It is built on [Tauri](https://tauri.app), [NestJS](https://nestjs.com), [Jetpack Compose](https://developer.android.com/compose), [libsodium](https://libsodium.org) and [werift](https://github.com/shinyoshiaki/werift-webrtc).
+khLink is built on [Tauri](https://tauri.app), [NestJS](https://nestjs.com), [Jetpack Compose](https://developer.android.com/compose), [libsodium](https://libsodium.org) and [werift](https://github.com/shinyoshiaki/werift-webrtc).
 
 <div align="center">
 

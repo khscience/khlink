@@ -324,7 +324,7 @@ Issue やプルリクエストを歓迎します。まず [CONTRIBUTING.md](CONT
 
 ## 謝辞
 
-khLink は [Linco Bridge](https://github.com/lincotalk/linco-bridge)（MIT）から発展したもので、その著作権表示を保持しています。[Tauri](https://tauri.app)、[NestJS](https://nestjs.com)、[Jetpack Compose](https://developer.android.com/compose)、[libsodium](https://libsodium.org)、[werift](https://github.com/shinyoshiaki/werift-webrtc) を使って構築されています。
+khLink は [Tauri](https://tauri.app)、[NestJS](https://nestjs.com)、[Jetpack Compose](https://developer.android.com/compose)、[libsodium](https://libsodium.org)、[werift](https://github.com/shinyoshiaki/werift-webrtc) を使って構築されています。
 
 <div align="center">
 
