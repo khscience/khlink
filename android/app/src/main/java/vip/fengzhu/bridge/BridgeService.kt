@@ -43,6 +43,20 @@ class BridgeService : Service() {
             val id = when { connectionStatus -> 1001; approval -> 1101; else -> (System.currentTimeMillis() % 100000).toInt() }
             manager.notify(id, notification(title, text, approval, channel, if (approval) repository.approval.value else null))
         }
+        repository.computerLockNotificationSink = { source, name, locked ->
+            val tag = "computer-lock:$source"
+            val id = 3000 + (source.hashCode() and 0xFFFFF)
+            if (locked) {
+                // Do not mark a lock as notified while the user has blocked
+                // notifications; a later live presence can retry after enabling.
+                if (!androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled() ||
+                    Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(CHANNEL_EVENTS)?.importance == NotificationManager.IMPORTANCE_NONE) {
+                    throw IllegalStateException("notifications disabled")
+                }
+                manager.notify(tag, id, notification("电脑已锁屏", "$name 已锁屏，部分桌面操作需要解锁后才能使用", false, CHANNEL_EVENTS))
+            }
+            else manager.cancel(tag, id)
+        }
         // Per-session reminders (a prompt waiting on the desktop, a finished
         // turn): one notification per session, tapping it opens the session.
         repository.threadNotificationSink = { threadId, title, text, urgent, kind ->
@@ -94,6 +108,7 @@ class BridgeService : Service() {
     }
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onDestroy() {
+        repository.computerLockNotificationSink = null
         serviceScope.cancel()
         super.onDestroy()
     }

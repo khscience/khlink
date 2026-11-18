@@ -199,7 +199,11 @@ function renderUpdate() {
   show('update-row', Boolean(connector || desktop || updateBusy));
   // What the offered version changes, from the signed manifest.
   const notes = updateNotes(connector ? updateInfo.notes : desktop ? updateInfo.desktop.notes : '');
-  $('update-notes').replaceChildren(...notes.map((line) => Object.assign(document.createElement('li'), { textContent: line })));
+  // Several versions: each starts with a "【version】" line, shown as a heading.
+  $('update-notes').replaceChildren(...notes.map((line) => {
+    const version = line.match(/^【(.+)】$/);
+    return Object.assign(document.createElement('li'), version ? { textContent: version[1], className: 'update-version' } : { textContent: line });
+  }));
   show('update-notes', !updateBusy && notes.length > 0);
   if (updateBusy) {
     $('update-label').textContent = updateBusyKind === 'desktop' ? '正在下载并校验桌面安装包…' : '正在更新连接器…';
@@ -218,7 +222,7 @@ function renderUpdate() {
 }
 
 function updateNotes(text) {
-  return String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 12);
+  return String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 120);
 }
 
 async function checkUpdates(manual = false) {
@@ -348,19 +352,14 @@ async function loadAccount({ retry = true } = {}) {
   $('nav-account-name').textContent = name;
     $('account-subject').textContent = `账号 ID ${profile.khQuantSubject || ''}`;
     const entries = Object.fromEntries((accountData.entitlements || []).map((item) => [item.product, item]));
-    const quant = entries.khquant || {};
     const link = entries.kh_link || {};
-    // A new account never had khQuant VIP, yet the site reports "expired" with
-    // no end date: that is "未开通", not "已到期".
-    $('khquant-state').textContent = stateLabel(quant.state === 'expired' && !quant.expiresAt ? '' : quant.state);
-    $('khquant-expiry').textContent = expiryLabel(quant.expiresAt, '会员不限 khLink 流量');
     $('khlink-state').textContent = stateLabel(link.state === 'expired' && !link.expiresAt ? '' : link.state);
     $('khlink-expiry').textContent = expiryLabel(link.expiresAt, '');
     // khLink is free (2026-11-06) and its VIP is no longer sold: the row shows
     // only for an account that still holds one.
     $('khlink-row').classList.toggle('hidden', !link.state);
     const effective = accountData.effectiveEntitlement || {};
-    $('effective-badge').textContent = effective.canWrite ? `khLink 可用 · ${sourceLabel(effective.source)}` : '当前只读';
+    $('effective-badge').textContent = effective.canWrite ? 'khLink 可用' : '当前只读';
     $('effective-badge').classList.toggle('inactive', !effective.canWrite);
     renderDevices(accountData.devices || []);
     renderAccount();
@@ -391,10 +390,6 @@ async function loadAccount({ retry = true } = {}) {
   } finally {
     accountLoadBusy = false;
   }
-}
-
-function sourceLabel(source) {
-  return ({ khquant: 'khQuant VIP', kh_link: 'khLink VIP', combined: '双重权益' })[source] || '免费额度';
 }
 
 function setDeviceText(element, value) {

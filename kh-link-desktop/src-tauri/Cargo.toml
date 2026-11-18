@@ -1,8 +1,8 @@
 [package]
 name = "kh-link-desktop"
-version = "0.1.50"
+version = "0.1.52"
 edition = "2024"
-license = "Proprietary"
+license = "PolyForm-Noncommercial-1.0.0"
 
 [lib]
 name = "kh_link_desktop_lib"

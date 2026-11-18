@@ -24,6 +24,8 @@ class HermesAcp extends EventEmitter {
     this.nextId = 0;
     this.pending = new Map();
     this.attached = new Set();   // sessions resumed/created on this child
+    // Sessions Hermes' ACP cannot resume (see attach); they outlive a child.
+    this.unresumable = new Set();
     this.models = null;          // last availableModels from session/new|resume
     this.sessionModels = new Map(); // sessionId -> currentModelId
     this.stderrTail = '';
@@ -132,13 +134,24 @@ class HermesAcp extends EventEmitter {
   // Prompting needs the session attached to this child; resume does that and
   // replays its history as updates, which the caller ignores.
   async attach(sessionId, cwd) {
+    // Each resume of such a session leaves one more empty session in Hermes.
+    if (this.unresumable.has(sessionId)) return null;
     await this.start();
     if (this.attached.has(sessionId)) return null;
     const result = await this._request('session/resume', { sessionId, cwd: cwd || '/', mcpServers: [] }, 120_000);
     this.attached.add(sessionId);
+    // Hermes v0.19 (its Windows install) resumes only sessions it created over
+    // ACP. For one made in its desktop app or CLI it opens a new, empty session
+    // instead and answers every prompt to the old id with "refusal"; the
+    // provenance in its answer then names that other session.
+    const provenance = result?._meta?.hermes?.sessionProvenance?.acpSessionId;
+    if (provenance && provenance !== sessionId) this.unresumable.add(sessionId); else this.unresumable.delete(sessionId);
     if (result?.models) { this.models = result.models; this.sessionModels.set(sessionId, result.models.currentModelId); }
     return result;
   }
+
+  /** Whether prompts to this session can go over ACP (known after attach). */
+  resumable(sessionId) { return !this.unresumable.has(sessionId); }
 
   prompt(sessionId, blocks) { return this.request('session/prompt', { sessionId, prompt: blocks }, PROMPT_TIMEOUT_MS); }
   // ACP cancel is a notification: the running prompt answers with stopReason "cancelled".

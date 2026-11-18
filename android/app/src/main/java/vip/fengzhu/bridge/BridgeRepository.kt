@@ -27,6 +27,8 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -248,11 +250,13 @@ class BridgeRepository(private val context: Context) {
     val lightDetails: StateFlow<Map<String, HistoryItem>> = _lightDetails
     private val _lightFetching = MutableStateFlow<Set<String>>(emptySet())
     val lightFetching: StateFlow<Set<String>> = _lightFetching
+    private val _lightProgress = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val lightProgress: StateFlow<Map<String, Int>> = _lightProgress
     private var lightDetailsThread: String? = null
 
     suspend fun loadLightDetails(threadId: String) = withContext(Dispatchers.IO) {
         val sessionTicket = sessionSnapshotGuard.capture()
-        val rows = database.cache().lightDetails(threadId)
+        val rows = database.cache().completeLightDetails(threadId)
         val decoded = rows.mapNotNull { row -> decodeLightDetail(threadId, row.id, row.itemOrder, row.nonce, row.ciphertext) }
         sessionSnapshotGuard.publish(sessionTicket) {
             lightDetailsThread = threadId
@@ -268,18 +272,20 @@ class BridgeRepository(private val context: Context) {
     suspend fun fetchLightDetails(threadId: String, placeholders: List<HistoryItem>): String? = withContext(Dispatchers.IO) {
         val key = placeholders.firstOrNull()?.id ?: return@withContext null
         if (key in _lightFetching.value) return@withContext null
-        _lightFetching.value = _lightFetching.value + key
+        _lightFetching.update { it + key }
         try {
             val now = System.currentTimeMillis()
             var legacyConnector = false
             val saved = mutableListOf<LightDetail>()
             val decoded = mutableListOf<HistoryItem>()
-            for (placeholder in placeholders.distinctBy { it.id }.take(200)) {
+            val requested = placeholders.distinctBy { it.id }.take(200)
+            for ((itemIndex, placeholder) in requested.withIndex()) {
                 var first: JSONObject? = null
                 if (!legacyConnector) {
                     val response = retryPendingLightDetail {
                         val reply = requestCommand("file.historyDetailPart", threadId,
-                            JSONObject().put("threadId", threadId).put("id", placeholder.id).put("offset", 0).put("resumeSearch", true), 45_000)
+                            JSONObject().put("threadId", threadId).put("id", placeholder.id).put("offset", 0).put("resumeSearch", true)
+                                .put("maxChunkChars", REQUESTED_LIGHT_DETAIL_PART_CHARS), 90_000)
                         val part = if (reply.optBoolean("ok", true)) commandResult(reply) else null
                         val pending = part?.optBoolean("pending") == true
                         if (pending) check(part?.optString("id") == placeholder.id && part?.optBoolean("found") == false) { "电脑返回的检索状态无效" }
@@ -308,10 +314,15 @@ class BridgeRepository(private val context: Context) {
                                 nonce = result.optString("nonce"), transferId = result.optString("transferId").takeIf { it.isNotBlank() && it != "null" },
                                 chunk = result.optString("chunk"), eof = result.optBoolean("eof"),
                             ))
+                            val total = result.optInt("total", 0)
+                            if (total > 0) {
+                                val percent = ((itemIndex * 100L + assembler.offset.toLong() * 100 / total) / requested.size).toInt().coerceIn(0, 99)
+                                _lightProgress.update { it + (key to percent) }
+                            }
                             if (assembler.complete) break
                             result = commandResult(requestCommand("file.historyDetailPart", threadId,
                                 JSONObject().put("threadId", threadId).put("id", placeholder.id)
-                                    .put("transferId", assembler.transferId).put("offset", assembler.offset), 45_000))
+                                    .put("transferId", assembler.transferId).put("offset", assembler.offset), 90_000))
                         }
                         LightDetail(threadId, placeholder.id, placeholder.order, assembler.nonce, assembler.ciphertext, now)
                     }
@@ -324,7 +335,7 @@ class BridgeRepository(private val context: Context) {
                 }
             }
             if (saved.isEmpty()) return@withContext "电脑上没有找到这些详细过程"
-            database.cache().putLightDetails(saved)
+            database.cache().saveLightDetails(saved)
             if (lightDetailsThread == threadId) {
                 _lightDetails.value = _lightDetails.value + decoded.associateBy { it.id }
             }
@@ -336,13 +347,18 @@ class BridgeRepository(private val context: Context) {
         } catch (error: Exception) {
             error.message ?: "取回失败"
         } finally {
-            _lightFetching.value = _lightFetching.value - key
+            _lightFetching.update { it - key }
+            _lightProgress.update { it - key }
         }
     }
 
     private val tokenUsageLock = Any()
     private val _conversationUsage = MutableStateFlow<Map<String, ConversationTokenUsage>>(emptyMap())
     val conversationUsage: StateFlow<Map<String, ConversationTokenUsage>> = _conversationUsage
+    private val _completionTimes = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val completionTimes: StateFlow<Map<String, Long>> = _completionTimes
+    private val usageFinishedSequence = MutableStateFlow<Map<String, Long>>(emptyMap())
+    private var pinnedCompletionJob: Job? = null
     private val _usageLoading = MutableStateFlow<Set<String>>(emptySet())
     val usageLoading: StateFlow<Set<String>> = _usageLoading
     private val followupNoticePrefs = context.getSharedPreferences("followup-failure-notices", Context.MODE_PRIVATE)
@@ -358,6 +374,9 @@ class BridgeRepository(private val context: Context) {
     private val desktopClaudePinsAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private var desktopPinOwnershipRefresh: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val fileTransfers = SharedFileTransfers(scope)
+    private val fileChunkSlots = kotlinx.coroutines.sync.Semaphore(8)
+    internal val computerFileTransfers: StateFlow<Map<String, ComputerTransferProgress>> = fileTransfers.progress
     // The default OkHttp read timeout is only 10 seconds.  History/event replay can
     // legitimately take longer while the relay is catching up after a phone resume.
     // Keep the WebSocket alive and give those idempotent reads enough time to finish.
@@ -368,6 +387,8 @@ class BridgeRepository(private val context: Context) {
         .readTimeout(45, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .pingInterval(25, TimeUnit.SECONDS)
+        // Falls back to Alibaba DNS when the network's resolver cannot find the relay.
+        .dns(FallbackDns())
         .build()
 
     // APK downloads run for over a minute on a slow overseas VPN. Over HTTP/2
@@ -416,6 +437,7 @@ class BridgeRepository(private val context: Context) {
         val threadId: String?,
         val args: JSONObject,
         val createdAt: Long = System.currentTimeMillis(),
+        val targetConnector: String? = null,
     )
     private val pendingActions = java.util.concurrent.ConcurrentHashMap<String, PendingAction>()
     private val pendingInstructionRetries = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -451,6 +473,9 @@ class BridgeRepository(private val context: Context) {
     // result into a newly opened conversation, including a quick close/reopen
     // of the same thread.
     @Volatile private var historyLoadGeneration = 0L
+    private val historyPreviews = HistoryPreviews()
+    private val historyScreenLock = Any()
+
     private var historyRefreshJob: Job? = null
     // history.updated can arrive in bursts while a desktop rollout is being
     // replayed.  Cancelling the in-flight HTTP read for every event leaves the
@@ -482,6 +507,9 @@ class BridgeRepository(private val context: Context) {
     private val _threads = MutableStateFlow<List<ThreadSummary>>(emptyList())
     val threads: StateFlow<List<ThreadSummary>> = _threads
     private val _liveStatuses = MutableStateFlow<Map<String, String>>(emptyMap())
+    private val stopFeedback = StopFeedback()
+    val stoppingThreads = stopFeedback.stopping
+    val stopConfirmedThreads = stopFeedback.confirmed
     val liveStatuses: StateFlow<Map<String, String>> = _liveStatuses
     private val _agentOpenStates = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val agentOpenStates: StateFlow<Map<String, Boolean>> = _agentOpenStates
@@ -492,6 +520,9 @@ class BridgeRepository(private val context: Context) {
     // missing for an older connector, which then shows the old empty list.
     private val _agentInstalledByConnector = MutableStateFlow<Map<String, Map<String, Boolean>>>(emptyMap())
     val agentInstalledByConnector: StateFlow<Map<String, Map<String, Boolean>>> = _agentInstalledByConnector
+    // Each computer's system ("win32", "darwin" ...) and home folder, from its presence.
+    private val _computerSystemByConnector = MutableStateFlow<Map<String, ComputerSystem>>(emptyMap())
+    val computerSystemByConnector: StateFlow<Map<String, ComputerSystem>> = _computerSystemByConnector
     // One account may have several computers. Each connector's last heartbeat,
     // so the PC switcher can show which computer is online.
     private val _connectorSeenAt = MutableStateFlow<Map<String, Long>>(emptyMap())
@@ -550,6 +581,8 @@ class BridgeRepository(private val context: Context) {
     val dshCatalog: StateFlow<DshCatalog?> = _dshCatalog
     private val _hermesCatalog = MutableStateFlow<DshCatalog?>(null)
     val hermesCatalog: StateFlow<DshCatalog?> = _hermesCatalog
+    private val _antigravityCatalog = MutableStateFlow<DshCatalog?>(null)
+    val antigravityCatalog: StateFlow<DshCatalog?> = _antigravityCatalog
     private val _dshPending = MutableStateFlow<DshPending?>(null)
     val dshPending: StateFlow<DshPending?> = _dshPending
     private val _dshPendingLoading = MutableStateFlow(false)
@@ -559,6 +592,45 @@ class BridgeRepository(private val context: Context) {
     val uploadIssue: StateFlow<UploadIssue?> = _uploadIssue
     private val _pcLoad = MutableStateFlow<PcLoad?>(null)
     val pcLoad: StateFlow<PcLoad?> = _pcLoad
+    private val _computerScreens = MutableStateFlow<Map<String, ComputerScreenState>>(emptyMap())
+    val computerScreens: StateFlow<Map<String, ComputerScreenState>> = _computerScreens
+    private val computerScreenLock = Any()
+    private val computerScreenNames = mutableMapOf<String, String>()
+
+    fun setComputerKeepAwake(enabled: Boolean) {
+        val source = selectedConnector() ?: error("请先选择在线电脑")
+        if (_computerScreens.value[source]?.supported != true) error("这台电脑暂不支持保持屏幕唤醒")
+        command("screen.keepAwake", args = JSONObject().put("enabled", enabled))
+    }
+
+    private fun computerLockNoticeKey(source: String): String {
+        val scope = "${crypto.server()}|${crypto.accountId() ?: "v1"}|$source"
+        val digest = MessageDigest.getInstance("SHA-256").digest(scope.toByteArray()).joinToString("") { "%02x".format(it) }
+        return "computer-lock-notice-$digest"
+    }
+
+    private fun notifyComputerScreen(source: String, state: ComputerScreenState) = synchronized(computerScreenLock) {
+        val sink = computerLockNotificationSink ?: return@synchronized
+        val name = computerScreenNames[source].orEmpty().ifBlank { "电脑" }.take(50)
+        if (state.locked == false) { runCatching { sink(source, name, false) }; return@synchronized }
+        val key = computerLockNoticeKey(source)
+        if (shouldNotifyComputerLock(state, displayPrefs.getString(key, null))) {
+            if (runCatching { sink(source, name, true) }.isSuccess) displayPrefs.edit().putString(key, state.lockId).apply()
+        }
+    }
+
+    private fun reconcileComputerScreen(frame: JSONObject, payload: JSONObject) {
+        val source = frame.optString("sourceDeviceId").takeIf { it.isNotBlank() && it != "null" }
+            ?: payload.optString("connectorId").takeIf { it.isNotBlank() && it != "null" } ?: return
+        val state = parseComputerScreen(payload.optJSONObject("screen")) ?: return
+        synchronized(computerScreenLock) {
+            val name = payload.optString("deviceName").takeIf { it.isNotBlank() && it != "null" }
+                ?: _devices.value.firstOrNull { it.id == source }?.name
+            if (!name.isNullOrBlank()) computerScreenNames[source] = name
+            _computerScreens.value = _computerScreens.value + (source to state)
+            notifyComputerScreen(source, state)
+        }
+    }
     private fun parseClaudeUsage(value: JSONObject?) {
         value ?: return
         fun window(key: String): ClaudeUsageWindow {
@@ -593,8 +665,8 @@ class BridgeRepository(private val context: Context) {
         parseDshUsage(value)?.let { _dshUsage.value = it }
     }
     private fun applyDshCatalog(value: JSONObject?) {
-        // Hermes answers in the same catalog shape; its models are its own list.
-        val target = if (value?.optString("backend") == "hermes") _hermesCatalog else _dshCatalog
+        // Hermes and Antigravity answer in the same catalog shape; their models are their own lists.
+        val target = when (value?.optString("backend")) { "hermes" -> _hermesCatalog; "antigravity" -> _antigravityCatalog; else -> _dshCatalog }
         parseDshCatalog(value?.optJSONObject("catalog"), value?.optJSONObject("permissionCatalog"))?.let { target.value = it }
     }
 
@@ -620,6 +692,7 @@ class BridgeRepository(private val context: Context) {
     }
     private val _claudeModels = MutableStateFlow<List<ClaudeModel>>(emptyList())
     val claudeModels: StateFlow<List<ClaudeModel>> = _claudeModels
+    private var claudeModelSnapshotAt = 0L
     private val _threadSettings = MutableStateFlow<Map<String, ThreadSettings>>(emptyMap())
     val threadSettings: StateFlow<Map<String, ThreadSettings>> = _threadSettings
     private val _turnDurations = MutableStateFlow<Map<String, TurnDuration>>(emptyMap())
@@ -675,6 +748,11 @@ class BridgeRepository(private val context: Context) {
     private fun serverUrl(value: String = crypto.server()): String = normalizeBridgeServer(value)
 
     var notificationSink: ((String, String, Boolean) -> Unit)? = null
+    var computerLockNotificationSink: ((String, String, Boolean) -> Unit)? = null
+        set(value) {
+            field = value
+            if (value != null) _computerScreens.value.forEach { (source, state) -> notifyComputerScreen(source, state) }
+        }
     // A question Codex just asked without stopping, offered on the phone right away.
     private val _codexQuestion = MutableStateFlow<CodexQuestionPrompt?>(null)
     val codexQuestion: StateFlow<CodexQuestionPrompt?> = _codexQuestion
@@ -841,8 +919,11 @@ class BridgeRepository(private val context: Context) {
     }
     fun selectConnector(deviceId: String) {
         if (deviceId.isBlank()) return
+        if (deviceId != _selectedConnectorId.value) { _claudeModels.value = emptyList(); claudeModelSnapshotAt = 0L }
         crypto.saveSelectedConnectorId(deviceId)
         _selectedConnectorId.value = deviceId
+        pinnedCompletionJob?.cancel()
+        _completionTimes.value = emptyMap()
         _conversationUsage.value = emptyMap()
         // The warning was about the previous computer; the new one's presence says its own.
         _uploadIssue.value = null
@@ -854,7 +935,7 @@ class BridgeRepository(private val context: Context) {
         _agentOpenStates.value = agentSnapshots[deviceId]?.second.orEmpty()
         // Per-computer readings belong to the computer they came from.
         _pcLoad.value = null
-        _dshUsage.value = null; _dshCatalog.value = null; _hermesCatalog.value = null
+        _dshUsage.value = null; _dshCatalog.value = null; _hermesCatalog.value = null; _antigravityCatalog.value = null
         runCatching { command("capabilities") }
         runCatching { command("backends.capabilities") }
         runCatching { command("followup.list") }
@@ -952,10 +1033,8 @@ class BridgeRepository(private val context: Context) {
         val args = JSONObject().put("cwd", cwd).put("text", prompt).put("mode", mode)
             .put("collaborationMode", if (collaborationMode.equals("plan", true)) "plan" else "default")
         if (backend.isNotBlank() && backend != "codex") args.put("backend", backend)
-        if (backend == "claude") {
-            if (model.isNotBlank()) args.put("model", model)
-            if (effort.isNotBlank()) args.put("effort", effort)
-        }
+        if (model.isNotBlank()) args.put("model", model.trim())
+        if (backend == "claude" && effort.isNotBlank()) args.put("effort", effort)
         val payload = requestCommand("thread.newWithTurn", null, args, 120_000)
         // A refusal carries the computer's own reason (e.g. a draft left in the new-task box); show that.
         val result = commandResult(payload).takeIf { payload.has("result") } ?: error("电脑没有返回新任务信息")
@@ -1024,17 +1103,62 @@ class BridgeRepository(private val context: Context) {
     private fun startDemo() {
         if (!crypto.legalAccepted(LEGAL_VERSION)) crypto.saveLegalConsent(LEGAL_VERSION, false, false)
         finishOnboarding()
+        // Once per process: a recreated screen keeps the scripted state.
+        if (demoStarted) return
+        demoStarted = true
+        if (!_claudeConsent.value.enabled) setClaudeConsent(true)
         val now = System.currentTimeMillis()
         relayConnected = true; reconnect = false
         connectorHeartbeatAt = now; connectorConnectedAt = now
+        // Every start opens on 家里的电脑, so a recording starts from the same screen.
+        crypto.saveSelectedConnectorId(DemoData.PC)
+        crypto.clearLastViewedThreadId()
+        crypto.saveHomeBackend("codex")
+        HOME_AGENT_IDS.forEach { saveAgentConnectorId(it, DemoData.PC) }
         _selectedConnectorId.value = DemoData.PC
-        _connectorSeenAt.value = mapOf(DemoData.PC to now)
-        _agentOpenStates.value = mapOf("codex" to true, "claude" to true)
-        _agentOpenStatesByConnector.value = mapOf(DemoData.PC to _agentOpenStates.value)
+        _devices.value = DemoData.COMPUTERS
+        _connectorSeenAt.value = DemoData.COMPUTERS.associate { it.id to now }
+        val open = HOME_AGENT_IDS.associateWith { true }
+        DemoData.COMPUTERS.forEach { agentSnapshots[it.id] = now to open }
+        _agentOpenStates.value = open
+        _agentOpenStatesByConnector.value = DemoData.COMPUTERS.associate { it.id to open }
+        _agentInstalledByConnector.value = DemoData.COMPUTERS.associate { it.id to open }
         _threads.value = DemoData.threads(now)
         _capabilities.value = CapabilityState(weeklyRemainingPercent = 68, weeklyResetAt = now + 3 * 86_400_000L, quotaState = "live", quotaSnapshotAt = now)
         _connection.value = ConnectionState.Online
         _statusText.value = "电脑在线 · 实时同步"
+        demo.start()
+    }
+
+    @Volatile private var demoStarted = false
+
+    /** The demo script's handle on this repository's state (demo build only). */
+    private val demo: DemoScript by lazy {
+        DemoScript(scope, object : DemoScript.Host {
+            override fun emit(kind: String, threadId: String?, payload: JSONObject) {
+                val source = targetConnectorForThread(threadId)
+                val frame = JSONObject().put("id", UUID.randomUUID().toString()).put("kind", kind).put("threadId", threadId)
+                    .put("createdAt", System.currentTimeMillis()).put("sourceDeviceId", source)
+                runCatching { applyFrame(frame, kind, threadId, payload) }.onFailure { Log.w(LOG_TAG, "demo frame $kind failed", it) }
+            }
+            override fun thread(id: String): ThreadSummary? = _threads.value.firstOrNull { it.id == id }
+            override fun addThread(thread: ThreadSummary) { _threads.value = sortThreadSummaries(_threads.value + thread) }
+            override fun updateThread(id: String, change: (ThreadSummary) -> ThreadSummary) {
+                _threads.value = sortThreadSummaries(_threads.value.map { if (it.id == id) change(it) else it })
+            }
+            override fun showItems(threadId: String, items: List<HistoryItem>) {
+                if (activeThreadId == threadId) {
+                    _items.value = items
+                    _historyLoadState.value = _historyLoadState.value.copy(threadId = threadId, loading = false, error = null)
+                }
+                reconcileDeliveredInstructions(threadId, items)
+            }
+            override fun heartbeat() {
+                val now = System.currentTimeMillis()
+                connectorHeartbeatAt = now
+                _connectorSeenAt.value = DemoData.COMPUTERS.associate { it.id to now }
+            }
+        })
     }
 
     suspend fun recoverSessionOnStartup(): Boolean = withContext(Dispatchers.IO) {
@@ -1275,6 +1399,13 @@ class BridgeRepository(private val context: Context) {
         val phoneId = crypto.deviceId(); val phoneName = "${Build.MANUFACTURER} ${Build.MODEL}".take(120)
         if (!resumed) _pairingLogin.value = PairingLoginState.DirectConnecting(pcName)
         var established = false
+        val channelOpened = java.util.concurrent.atomic.AtomicBoolean(false)
+        val answerAcknowledged = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun lanFailure() = when {
+            channelOpened.get() -> DirectSignaling.NO_WELCOME
+            answerAcknowledged.get() -> DirectSignaling.NO_CHANNEL
+            else -> DirectSignaling.NO_ACK
+        }
         val onReceive = fun(raw: String) {
             if (welcome.isCancelled || directWelcome !== welcome) return
             runCatching {
@@ -1328,6 +1459,7 @@ class BridgeRepository(private val context: Context) {
         }
         val onOpened = fun() {
             if (welcome.isCancelled || directWelcome !== welcome) return
+            channelOpened.set(true)
             val id = UUID.randomUUID().toString()
             val raw = if (via == DirectVia.TunnelResume) {
                 // A paired phone asks again on the tunnel, sealed with the pairing key.
@@ -1343,7 +1475,11 @@ class BridgeRepository(private val context: Context) {
             directPeer?.send(raw)
         }
         val onFailed = fun(reason: String) {
-            if (!welcome.isCancelled && directWelcome === welcome) { welcome.completeExceptionally(IllegalStateException(reason)); directFailed(reason) }
+            if (!welcome.isCancelled && directWelcome === welcome) {
+                val detail = if (!established && via == DirectVia.WebRtc && reason in setOf(DirectPeer.ICE_FAILED, DirectPeer.CHANNEL_CLOSED)) lanFailure() else reason
+                welcome.completeExceptionally(IllegalStateException(detail))
+                directFailed(detail)
+            }
         }
         val peer: DirectTransport = if (via == DirectVia.WebRtc) DirectPeer(context, onReceive, onOpened, onFailed) else {
             val target = if (via == DirectVia.TunnelResume) "resume" else offer.getString("id")
@@ -1355,6 +1491,10 @@ class BridgeRepository(private val context: Context) {
                 val sdp = peer.answer(offer)
                 try {
                     DirectSignaling.submit(offer, DirectQr.answer(offer, phoneId, phoneName, sdp), crypto) { directPeer !== peer || welcome.isCancelled }
+                    answerAcknowledged.set(true)
+                } catch (error: java.net.SocketTimeoutException) {
+                    if (welcome.isCompleted) welcome.await()
+                    else if (!channelOpened.get()) throw error
                 } catch (error: Exception) { if (!established) throw error }
             } else (peer as DirectTunnelPeer).connect()
             kotlinx.coroutines.withTimeout(if (via == DirectVia.WebRtc) 20_000 else 30_000) { welcome.await() }
@@ -1362,7 +1502,7 @@ class BridgeRepository(private val context: Context) {
             if (directPeer === peer) { directPairing = false; directPeer = null }
             welcome.cancel(); peer.close()
             if (error is kotlinx.coroutines.TimeoutCancellationException) throw IllegalStateException(
-                if (via == DirectVia.WebRtc) "当前网络无法自动直连，请换用同一 Wi-Fi／热点或账户连接" else "跨网络直连超时，请稍后重试或换用账户连接", error)
+                if (via == DirectVia.WebRtc) lanFailure() else "跨网络直连超时，请稍后重试或换用账户连接", error)
             throw error
         }
     }
@@ -1689,19 +1829,53 @@ class BridgeRepository(private val context: Context) {
             if (stale && file != downloadedUpdate) file.delete()
         }
     }
-    fun watchThread(threadId: String?) {
+    internal suspend fun preloadHistoryPreviews(keys: List<HistoryPreviewKey>, ticket: Long = sessionSnapshotGuard.capture()) = withContext(Dispatchers.IO) {
+        for (key in keys.distinct().take(HISTORY_PREVIEW_THREADS)) launch {
+            if (!sessionSnapshotGuard.isCurrent(ticket) || _threads.value.none { it.id == key.threadId && it.historyPreviewKey(_selectedConnectorId.value) == key }) return@launch
+            try {
+                database.cache().observeLatestItems(key.threadId, HISTORY_PREVIEW_ROWS, HISTORY_CACHE_ITEM_MAX_CHARS)
+                    .distinctUntilChanged().collect { rows ->
+                        val items = decodeCachedHistory(key.threadId, rows)
+                        if (!sessionSnapshotGuard.publish(ticket) { historyPreviews.put(key, items) }) return@collect
+                        if (rows.isEmpty() && _connection.value == ConnectionState.Online && connectivity?.isActiveNetworkMetered == false &&
+                            historyPreviews.reserveMissing(key.threadId, android.os.SystemClock.elapsedRealtime())) {
+                            try {
+                                prefetchThread(key.threadId, ticket, onlyWhenEmpty = true)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (error: Exception) {
+                                Log.d(LOG_TAG, "Visible conversation prefetch unavailable", error)
+                            }
+                        }
+                    }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.w(LOG_TAG, "Unable to prepare local history preview", error)
+            } finally {
+                sessionSnapshotGuard.publish(ticket) { historyPreviews.remove(key) }
+            }
+        }
+    }
+
+    fun watchThread(threadId: String?) = synchronized(historyScreenLock) {
         historyLoadGeneration++
-        if (threadId != null && activeThreadId != threadId) {
+        val previousThread = activeThreadId
+        activeThreadId = threadId
+        if (threadId != null && previousThread != threadId) {
             synchronized(historyRefreshLock) {
                 historyRefreshGeneration++
                 historyRefreshPending.set(false)
                 historyRefreshJob?.cancel()
                 historyRefreshJob = null
             }
-            _items.value = emptyList()
-            _historyLoadState.value = HistoryLoadState(threadId = threadId, loading = true)
+            val key = _threads.value.firstOrNull { it.id == threadId }?.historyPreviewKey(_selectedConnectorId.value)
+            val preview = key?.let(historyPreviews::get).orEmpty()
+            _items.value = preview
+            _historyLoadState.value = HistoryLoadState(threadId = threadId, loading = true,
+                loadedCount = preview.size, loadedPages = if (preview.isEmpty()) 0 else 1)
+            Log.d(LOG_TAG, "history open thread=$threadId previewRows=${preview.size}")
         }
-        activeThreadId = threadId
         if (threadId == null) {
             synchronized(historyRefreshLock) {
                 historyRefreshGeneration++
@@ -1734,6 +1908,8 @@ class BridgeRepository(private val context: Context) {
     }
 
     suspend fun checkForUpdate(manual: Boolean = false): UpdateInfo? = withContext(Dispatchers.IO) {
+        // The demo build never offers an update: it would cover recordings.
+        if (BuildConfig.DEMO) return@withContext null
         // A build without an update key (open source) has no update channel.
         if (BuildConfig.UPDATE_PUBLIC_KEY.isBlank()) {
             check(!manual) { "这个版本没有配置更新渠道" }
@@ -1758,8 +1934,12 @@ class BridgeRepository(private val context: Context) {
         val android = manifest.getJSONObject("android")
         val urls = updateDownloadUrls(android, ::rehomeBridgeUrl)
         check(urls.isNotEmpty()) { "更新清单里没有下载地址" }
+        val latestNotes = updateNotes(android.optString("notes"))
+        val history = android.optJSONArray("history")?.let { list ->
+            (0 until list.length()).mapNotNull { index -> list.optJSONObject(index)?.let { it.optString("version") to it.optString("notes") } }
+        }.orEmpty()
         val update = UpdateInfo(android.getString("versionName"), android.getInt("versionCode"), urls.first(), android.getString("sha256"),
-            updateNotes(android.optString("notes")), urls)
+            latestNotes, urls, updateNoteGroups(android.getString("versionName"), latestNotes, history, BuildConfig.VERSION_NAME))
         val skipped = crypto.skippedUpdateVersion()
         val offered = update.takeIf {
             shouldOfferUpdate(it.versionCode, BuildConfig.VERSION_CODE, skipped, postponedUpdates, manual)
@@ -2145,7 +2325,7 @@ class BridgeRepository(private val context: Context) {
         if (!published) return@withLock
         removed.forEach { id ->
             if (!sessionSnapshotGuard.isCurrent(sessionTicket)) return@withLock
-            database.cache().deleteThread(id); database.cache().deleteItems(id)
+            database.cache().deleteThread(id); database.cache().deleteItems(id); dropItemsCursor(id)
         }
         sessionSnapshotGuard.publish(sessionTicket) {
             // Only acknowledge the change cursor after all cache deletions
@@ -2204,8 +2384,30 @@ class BridgeRepository(private val context: Context) {
     )
 
     // Per conversation, the relay's item stamp when this phone last had all of
-    // its newest items on screen. In memory: a reopened app starts with a page.
+    // its newest items on screen or in its cache.
     private val itemsCursors = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    // The same stamp kept with the cache, per account: reopening a conversation
+    // (also after the app restarts) asks only for what changed since, instead
+    // of downloading its newest page again (2026-11-15: phones re-read pages
+    // with large images on every open).
+    private fun savedItemsCursorKey(threadId: String): String? =
+        if (usingV2()) crypto.accountId()?.let { "itemsCursor:$it:$threadId" } else null
+
+    private fun savedItemsCursor(threadId: String): Long? {
+        val key = savedItemsCursorKey(threadId) ?: return null
+        return historyCachePrefs.getLong(key, -1L).takeIf { it >= 0L }
+    }
+
+    private fun setItemsCursor(threadId: String, cursor: Long) {
+        itemsCursors[threadId] = cursor
+        savedItemsCursorKey(threadId)?.let { historyCachePrefs.edit().putLong(it, cursor).apply() }
+    }
+
+    private fun dropItemsCursor(threadId: String) {
+        itemsCursors.remove(threadId)
+        savedItemsCursorKey(threadId)?.let { historyCachePrefs.edit().remove(it).apply() }
+    }
 
     /**
      * The open conversation's changes since its cursor, merged into the screen
@@ -2217,24 +2419,24 @@ class BridgeRepository(private val context: Context) {
         if (_historyLoadState.value.threadId != threadId) return false
         val page = fetchHistoryPage(threadId, "?changedSince=$since&limit=100")
         val cursor = page.cursor ?: return false
-        if (page.hasMore) { itemsCursors.remove(threadId); return false }
+        if (page.hasMore) { dropItemsCursor(threadId); return false }
         if (activeThreadId != threadId || historyLoadGeneration != loadGeneration) return true
         val cut = page.trimmedBefore
         if (cut != null) database.cache().deleteItemsBefore(threadId, cut)
         val before = _items.value.filterNot { cut != null && it.order < cut }
-        if (before.isEmpty()) { itemsCursors.remove(threadId); return false }
+        if (before.isEmpty()) { dropItemsCursor(threadId); return false }
         // Items older than the screen (a backfill of old history) go to the
         // cache only: on screen they would sit above a gap that scrolling up
         // then skips, because older pages start below the lowest item shown.
         val lowest = before.minOf { it.order }
         val merged = mergeChangedHistoryItems(before, page.items.filter { it.order >= lowest }, page.removed)
-        val dropped = before.map { it.id }.toSet() - merged.map { it.id }.toSet()
+        val dropped = (before.map { it.id }.toSet() - merged.map { it.id }.toSet()) + page.removed
         database.cache().putItems(page.cache)
         if (dropped.isNotEmpty()) database.cache().deleteItemIds(threadId, dropped.toList())
         // An older change replacing another item at its position: the cache
         // must not show both when scrolling up later.
         page.items.filter { it.order < lowest }.forEach { database.cache().deleteItemsAtOrder(threadId, it.order, it.id) }
-        itemsCursors[threadId] = cursor
+        setItemsCursor(threadId, cursor)
         if (activeThreadId != threadId || historyLoadGeneration != loadGeneration) return true
         _items.value = merged
         if (turnStartedAt[threadId] == null && isTurnBusyStatus(_liveStatuses.value[threadId].orEmpty())) {
@@ -2295,11 +2497,32 @@ class BridgeRepository(private val context: Context) {
         }
     }
 
-    private suspend fun prefetchThread(threadId: String) = prefetchMutex.withLock {
-        if (threadId == activeThreadId) return@withLock
-        val sessionTicket = sessionSnapshotGuard.capture()
+    private suspend fun prefetchThread(threadId: String, sessionTicket: Long = sessionSnapshotGuard.capture(), onlyWhenEmpty: Boolean = false) = prefetchMutex.withLock {
+        if (threadId == activeThreadId || !sessionSnapshotGuard.isCurrent(sessionTicket)) return@withLock
         val startedAt = System.currentTimeMillis()
         val cachedMax = database.cache().maxItemOrder(threadId)
+        if (cachedMax != null) {
+            if (onlyWhenEmpty) return@withLock
+            val updated = _threads.value.firstOrNull { it.id == threadId }?.updatedAt ?: return@withLock
+            if (updated <= historyCachePrefs.getLong(historyPrefetchedAtKey(threadId), 0L)) return@withLock
+        }
+        // A cached conversation with a known relay stamp: only its changes.
+        val saved = if (cachedMax != null) savedItemsCursor(threadId) else null
+        if (saved != null) {
+            val changes = fetchHistoryPage(threadId, "?changedSince=$saved&limit=100")
+            val next = changes.cursor
+            if (next != null && !changes.hasMore) {
+                if (!sessionSnapshotGuard.isCurrent(sessionTicket) || threadId == activeThreadId) return@withLock
+                changes.trimmedBefore?.let { database.cache().deleteItemsBefore(threadId, it) }
+                changes.items.forEach { database.cache().deleteItemsAtOrder(threadId, it.order, it.id) }
+                if (changes.removed.isNotEmpty()) database.cache().deleteItemIds(threadId, changes.removed.toList())
+                database.cache().putItems(changes.cache)
+                setItemsCursor(threadId, next)
+                historyCachePrefs.edit().putLong(historyPrefetchedAtKey(threadId), startedAt).apply()
+                Log.d(LOG_TAG, "history prefetched changes thread=$threadId changed=${changes.items.size}")
+                return@withLock
+            }
+        }
         val latest = fetchHistoryPage(threadId, "?limit=$HISTORY_PAGE_SIZE")
         // A cache that stops short of the newest page would otherwise keep a
         // hole the open screen cannot see: fill the middle as opening does.
@@ -2309,6 +2532,10 @@ class BridgeRepository(private val context: Context) {
         if (!sessionSnapshotGuard.isCurrent(sessionTicket) || threadId == activeThreadId) return@withLock
         latest.trimmedBefore?.let { database.cache().deleteItemsBefore(threadId, it) }
         database.cache().putItems(latest.cache + (recovered?.cache ?: emptyList()))
+        // The cache now ends with the newest page (and no hole before it):
+        // later opens and prefetches ask only for changes.
+        val cursor = latest.cursor
+        if (cursor != null && recovered?.hasMore != true) setItemsCursor(threadId, cursor) else dropItemsCursor(threadId)
         historyCachePrefs.edit().putLong(historyPrefetchedAtKey(threadId), startedAt).apply()
         Log.d(LOG_TAG, "history prefetched thread=$threadId latest=${latest.items.size} recovered=${recovered?.items?.size ?: 0}")
     }
@@ -2355,33 +2582,70 @@ class BridgeRepository(private val context: Context) {
         return DecodedHistoryPage(recovered.distinctBy { it.id }.sortedBy { it.order }, cache, hasMore, removed)
     }
 
-    suspend fun loadThread(threadId: String, before: Long? = null, mergeLatest: Boolean = false) = withContext(Dispatchers.IO) {
+    suspend fun loadThread(threadId: String, before: Long? = null, mergeLatest: Boolean = false, loadGeneration: Long = historyLoadGeneration) = withContext(Dispatchers.IO) {
         if (BuildConfig.DEMO) {
-            _items.value = DemoData.items(threadId)
+            _items.value = demo.items(threadId)
             _historyLoadState.value = _historyLoadState.value.copy(threadId = threadId, loading = false, error = null)
             return@withContext
         }
+        val initialOpen = before == null && !mergeLatest
+        if (activeThreadId != threadId || historyLoadGeneration != loadGeneration) return@withContext
+        // A notification, cold start or quick tap can beat the list preloader.
+        // Prioritize the first screen even if another history request owns the lock.
+        if (initialOpen && _items.value.isEmpty()) {
+            val preview = decodeCachedHistory(threadId, database.cache().items(threadId, HISTORY_PREVIEW_ROWS, HISTORY_CACHE_ITEM_MAX_CHARS))
+            synchronized(historyScreenLock) {
+                if (preview.isNotEmpty() && activeThreadId == threadId && historyLoadGeneration == loadGeneration && _items.value.isEmpty()) {
+                    _items.value = preview
+                    _historyLoadState.value = HistoryLoadState(threadId, loading = true, loadedCount = preview.size, loadedPages = 1)
+                    Log.d(LOG_TAG, "history disk preview thread=$threadId count=${preview.size}")
+                }
+            }
+        }
         historyMutex.withLock {
-            val loadGeneration = historyLoadGeneration
             val previousState = _historyLoadState.value
             if (activeThreadId != threadId || historyLoadGeneration != loadGeneration) return@withLock
             if (!mergeLatest) _historyLoadState.value = previousState.copy(threadId = threadId, loading = true, error = null)
             restoreTurnDuration(threadId)
             var visibleState = _historyLoadState.value
-            val initialOpen = before == null && !mergeLatest
             // A fresh open (also one that falls back to the cache) reads the
             // newest page, which sets the cursor again.
             if (initialOpen) itemsCursors.remove(threadId)
             // Show what this phone already has at once (prefetch keeps it
             // current); the newest page from the relay merges in after.
-            val early = if (initialOpen) readCachedHistory(threadId) else emptyList()
+            var initialCache = if (initialOpen) readCachedWindow(threadId) else CachedHistoryWindow()
+            val early = initialCache.items
             if (early.isNotEmpty() && activeThreadId == threadId && historyLoadGeneration == loadGeneration) {
                 _items.value = early
                 reconcileDeliveredInstructions(threadId, early)
                 visibleState = HistoryLoadState(threadId, loading = true, loadedCount = early.size, loadedPages = 1,
-                    hasMore = historyCachePrefs.getBoolean(historyCacheHasMoreKey(threadId), early.size >= HISTORY_PAGE_SIZE))
+                    hasMore = initialCache.hasOlder || historyCachePrefs.getBoolean(historyCacheHasMoreKey(threadId), early.size >= HISTORY_PAGE_SIZE))
                 _historyLoadState.value = visibleState
                 Log.d(LOG_TAG, "history cache displayed thread=$threadId count=${early.size}")
+            }
+            // The cache already holds this conversation up to a known relay
+            // stamp: ask only for what changed since, not the newest page again.
+            if (initialOpen && early.isNotEmpty() && !historyCachePrefs.getBoolean(historyCacheForceRefreshKey(threadId), false) &&
+                activeThreadId == threadId && historyLoadGeneration == loadGeneration) {
+                val saved = savedItemsCursor(threadId)
+                if (saved != null) {
+                    itemsCursors[threadId] = saved
+                    val changed = try { mergeChangedItems(threadId, loadGeneration) }
+                        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                        catch (error: Exception) { Log.w(LOG_TAG, "history changes on open failed thread=$threadId", error); false }
+                    if (changed) {
+                        if (activeThreadId != threadId || historyLoadGeneration != loadGeneration) return@withLock
+                        val hasMore = historyCachePrefs.getBoolean(historyCacheHasMoreKey(threadId), _items.value.size >= HISTORY_PAGE_SIZE)
+                        if (shouldRequestHistoryBackfill(threadId, early, _items.value)) requestHistoryBackfill(threadId)
+                        saveHistoryCacheState(threadId, hasMore)
+                        _historyLoadState.value = _historyLoadState.value.copy(threadId = threadId, loading = false, loadedCount = _items.value.size,
+                            loadedPages = maxOf(_historyLoadState.value.loadedPages, 1), hasMore = initialCache.hasOlder || hasMore, recovering = false, error = null)
+                        Log.d(LOG_TAG, "history opened from cache with changes thread=$threadId total=${_items.value.size}")
+                        trimCache()
+                        return@withLock
+                    }
+                    itemsCursors.remove(threadId)
+                }
             }
             try {
                 // A refresh of the open conversation asks only for the items
@@ -2392,15 +2656,31 @@ class BridgeRepository(private val context: Context) {
                 // expose it immediately. Older cached rows are merged only after
                 // the latest server state has had a chance to render.
                 val suffix = before?.let { "?limit=$HISTORY_PAGE_SIZE&before=$it" } ?: "?limit=$HISTORY_PAGE_SIZE"
+                suspend fun showOfflinePage(): Boolean {
+                    if (before == null || activeThreadId != threadId || historyLoadGeneration != loadGeneration) return false
+                    val older = readCachedWindow(threadId, before)
+                    if (older.items.isEmpty() || activeThreadId != threadId || historyLoadGeneration != loadGeneration) return false
+                    val merged = (older.items + _items.value).distinctBy { it.id }.sortedBy { it.order }
+                    _items.value = merged
+                    reconcileDeliveredInstructions(threadId, older.items)
+                    _historyLoadState.value = visibleState.copy(loading = false, loadedCount = merged.size,
+                        loadedPages = visibleState.loadedPages + 1, hasMore = older.hasOlder ||
+                            historyCachePrefs.getBoolean(historyCacheHasMoreKey(threadId), false), error = null)
+                    return true
+                }
+                if (before != null && _connection.value != ConnectionState.Online && showOfflinePage()) return@withLock
                 val latestPage = try {
                     fetchHistoryPage(threadId, suffix)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
                 } catch (error: Exception) {
+                    if (showOfflinePage()) return@withLock
                     // A transient offline/timeout open still gets a useful local
                     // view instead of an empty conversation.
                     if (initialOpen && activeThreadId == threadId && historyLoadGeneration == loadGeneration) {
-                        val fallback = early.ifEmpty { readCachedHistory(threadId) }
+                        val fallback = early
                         if (fallback.isNotEmpty()) {
-                            val hasMore = historyCachePrefs.getBoolean(historyCacheHasMoreKey(threadId), fallback.size >= HISTORY_PAGE_SIZE)
+                            val hasMore = initialCache.hasOlder || historyCachePrefs.getBoolean(historyCacheHasMoreKey(threadId), fallback.size >= HISTORY_PAGE_SIZE)
                             _items.value = fallback
                             reconcileDeliveredInstructions(threadId, fallback)
                             visibleState = HistoryLoadState(threadId, loading = false, loadedCount = fallback.size, loadedPages = 1, hasMore = hasMore)
@@ -2431,7 +2711,8 @@ class BridgeRepository(private val context: Context) {
                     // visible before Room decrypts and merges older cache rows.
                     yield()
                     if (activeThreadId != threadId || historyLoadGeneration != loadGeneration) return@withLock
-                    cached = readCachedHistory(threadId)
+                    initialCache = readCachedWindow(threadId)
+                    cached = initialCache.items
                 }
                 val latestPreview = if (before == null && !mergeLatest) {
                     (cached + latestPage.items).distinctBy { it.id }.size
@@ -2457,7 +2738,14 @@ class BridgeRepository(private val context: Context) {
                 // Older history cleared on the relay leaves this phone too.
                 val cut = latestPage.trimmedBefore
                 if (cut != null) database.cache().deleteItemsBefore(threadId, cut)
-                val base = (if (initialOpen) cached else _items.value).filterNot { it.id in latestPage.removed || (cut != null && it.order < cut) }
+                // The relay can hold fewer pages than this phone. Preserve earlier
+                // local messages after its last page, subject to its explicit trim.
+                val olderLocal = if (before != null && !latestPage.hasMore) {
+                    readCachedWindow(threadId, latestPage.items.minOfOrNull { it.order } ?: before)
+                } else CachedHistoryWindow()
+                if (activeThreadId != threadId || historyLoadGeneration != loadGeneration) return@withLock
+                val base = (if (initialOpen) cached else olderLocal.items + _items.value)
+                    .filterNot { it.id in latestPage.removed || (cut != null && it.order < cut) }
                 val recoveredPage = if (before == null && historyNeedsForwardRecovery(base, latestPage.items)) {
                     if (activeThreadId == threadId) {
                         _historyLoadState.value = HistoryLoadState(threadId, loading = true, loadedCount = base.size, loadedPages = 1, hasMore = true, recovering = true)
@@ -2466,7 +2754,7 @@ class BridgeRepository(private val context: Context) {
                 } else null
                 if (activeThreadId != threadId || historyLoadGeneration != loadGeneration) return@withLock
                 database.cache().putItems(latestPage.cache + (recoveredPage?.cache ?: emptyList()))
-                if (before == null) latestPage.cursor?.let { itemsCursors[threadId] = it }
+                if (before == null) latestPage.cursor?.let { setItemsCursor(threadId, it) }
                 val decoded = latestPage.items + (recoveredPage?.items ?: emptyList())
                 val gone = recoveredPage?.removed.orEmpty()
                 val latestMerge = if (before == null) mergeLatestHistoryPage(base.filterNot { it.id in gone }, decoded) else null
@@ -2480,16 +2768,19 @@ class BridgeRepository(private val context: Context) {
                 reconcileDeliveredInstructions(threadId, merged)
                 val pageHasMore = latestPage.hasMore
                 val hasMore = if (latestMerge?.resetToLatest == true) pageHasMore
-                else if (initialOpen && cached.size >= HISTORY_CACHE_LIMIT) true
                 else if (mergeLatest && previousState.threadId == threadId && previousState.loadedCount > 30)
                     previousState.hasMore else pageHasMore
                 if (before == null) saveHistoryCacheState(threadId, hasMore)
                 else historyCachePrefs.edit().putBoolean(historyCacheHasMoreKey(threadId), hasMore).apply()
                 if (activeThreadId != threadId || historyLoadGeneration != loadGeneration) return@withLock
-                _historyLoadState.value = HistoryLoadState(threadId, loading = false, loadedCount = merged.size, loadedPages = maxOf(previousState.loadedPages, 1), hasMore = hasMore, recovering = false,
+                _historyLoadState.value = HistoryLoadState(threadId, loading = false, loadedCount = merged.size, loadedPages = maxOf(previousState.loadedPages, 1), hasMore = hasMore ||
+                        initialCache.hasOlderAfter(cut) || olderLocal.hasOlderAfter(cut), recovering = false,
                     trimmed = cut != null || (previousState.threadId == threadId && previousState.trimmed))
                 trimCache()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: Exception) {
+                if (activeThreadId != threadId || historyLoadGeneration != loadGeneration) return@withLock
                 if (!mergeLatest || visibleState.loadedCount > 0) {
                     val message = if (error is SocketTimeoutException || error.message.orEmpty().contains("timeout", ignoreCase = true) || error.message.orEmpty().contains("timed out", ignoreCase = true))
                         "连接超时，请稍后重试"
@@ -2530,8 +2821,30 @@ class BridgeRepository(private val context: Context) {
         val readOnlyAllowed = action in setOf("accounts.read", "capabilities", "backends.capabilities", "claude.usage", "claude.usage.refresh", "dsh.usage", "dsh.pending", "followup.list", "thread.list", "thread.read", "thread.settings.read", "thread.usage.read", "thread.ownership.read", "history.sync")
         if (usingV2() && _account.value?.canWrite != true && !readOnlyAllowed) error(readOnlyReason())
         val requestId = UUID.randomUUID().toString()
-        sendCommand(requestId, action, threadId, args)
+        // Freeze the destination so a late reply from an old computer cannot
+        // replace the model list after the user switches computers.
+        val target = if (action in setOf("backends.capabilities", "screen.keepAwake")) targetConnectorForThread(threadId) else null
+        sendCommand(requestId, action, threadId, args, targetConnector = target)
         return requestId
+    }
+
+    /** Hide Stop immediately, but wait for the turn's terminal status before confirming it. */
+    fun stop(threadId: String) {
+        if (usingV2() && _account.value?.canWrite != true) error(readOnlyReason())
+        val requestId = UUID.randomUUID().toString()
+        if (!stopFeedback.begin(threadId, requestId)) return
+        try {
+            sendCommand(requestId, "turn.stop", threadId, JSONObject().put("threadId", threadId))
+        } catch (failure: Exception) {
+            stopFeedback.rejected(threadId, requestId)
+            throw failure
+        }
+        scope.launch {
+            delay(30_000)
+            if (stopFeedback.uncertain(threadId, requestId)) {
+                _message.value = "电脑还没有确认任务已停止，请检查运行状态后再决定是否重试"
+            }
+        }
     }
 
     fun queueInstruction(threadId: String, title: String, text: String, attachments: List<AttachmentUpload> = emptyList()) {
@@ -2620,15 +2933,66 @@ class BridgeRepository(private val context: Context) {
         }
     }
 
-    fun loadThreadSettings(threadId: String) {
+    /** [refresh]: Antigravity's settings are read from its window, so only when its dialog opens. */
+    fun loadThreadSettings(threadId: String, refresh: Boolean = false) {
         if (!backendHasThreadSettings(_threads.value.firstOrNull { it.id == threadId }?.backend)) return
-        command("thread.settings.read", threadId, JSONObject().put("threadId", threadId))
+        val args = JSONObject().put("threadId", threadId)
+        if (refresh) args.put("refresh", true)
+        command("thread.settings.read", threadId, args)
     }
 
     private fun usageCacheKey(threadId: String): String {
         val namespace = "${crypto.server()}|${crypto.accountId() ?: "v1"}|${targetConnectorForThread(threadId).orEmpty()}|$threadId"
         return MessageDigest.getInstance("SHA-256").digest(namespace.toByteArray()).joinToString("") { "%02x".format(it) }
     }
+
+    private fun completionTimeKey(threadId: String) = "completion-sort:${usageCacheKey(threadId)}"
+
+    /** Read only known terminal records, on demand, with at most two scans running. */
+    fun preparePinnedCompletionSort(threads: List<ThreadSummary>) {
+        pinnedCompletionJob?.cancel()
+        val rows = threads.distinctBy { it.id }
+        val cached = rows.mapNotNull { row ->
+            historyCachePrefs.getLong(completionTimeKey(row.id), 0L).takeIf { it > 0L }?.let { row.id to it }
+        }.toMap()
+        _completionTimes.update { it + cached }
+        if (BuildConfig.DEMO) {
+            val now = System.currentTimeMillis()
+            _completionTimes.update { it + mapOf("demo-2" to now - 1_000L, "demo-3" to now - 2_000L, "demo-4" to now - 3_000L) }
+            return
+        }
+        pinnedCompletionJob = scope.launch {
+            val gate = kotlinx.coroutines.sync.Semaphore(2)
+            kotlinx.coroutines.coroutineScope {
+                rows.filter { backendTab(it.backend) in setOf("codex", "claude", "pi") }.map { thread -> async {
+                    gate.withPermit {
+                        val key = usageCacheKey(thread.id)
+                        synchronized(tokenUsageLock) {
+                            if (_conversationUsage.value[thread.id] == null) runCatching {
+                                tokenUsagePrefs.getString(key, null)?.let { cachedUsage ->
+                                    _conversationUsage.value += thread.id to ConversationTokenUsage.fromJson(JSONObject(cachedUsage)).copy(fromCache = true)
+                                }
+                            }
+                        }
+                        if (_connection.value != ConnectionState.Online) return@withPermit
+                        val before = usageFinishedSequence.value[thread.id] ?: 0L
+                        try {
+                            val result = commandResult(requestCommand("thread.usage.read", thread.id,
+                                JSONObject().put("threadId", thread.id).put("historyFrom", 0L), 25_000))
+                            if (key != usageCacheKey(thread.id)) return@withPermit
+                            applyConversationUsage(thread.id, result)
+                            if (result.optString("status") == "scanning") {
+                                withTimeoutOrNull(180_000) { usageFinishedSequence.first { (it[thread.id] ?: 0L) > before } }
+                            }
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { /* Keep the known cached completion and original order. */ }
+                    }
+                } }.awaitAll()
+            }
+        }
+    }
+
+    fun cancelPinnedCompletionSort() { pinnedCompletionJob?.cancel(); pinnedCompletionJob = null }
 
     fun loadConversationUsage(threadId: String, historyFrom: Long = 0L) {
         val key = usageCacheKey(threadId)
@@ -2665,6 +3029,7 @@ class BridgeRepository(private val context: Context) {
         val expected = targetConnectorForThread(threadId)
         if (source != null && expected != null && source != expected) return
         val next = ConversationTokenUsage.fromJson(result)
+        if (next.status != "scanning") usageFinishedSequence.update { it + (threadId to ((it[threadId] ?: 0L) + 1L)) }
         synchronized(tokenUsageLock) {
             val old = _conversationUsage.value[threadId]
             val merged = mergeConversationUsage(old, next)
@@ -2680,6 +3045,96 @@ class BridgeRepository(private val context: Context) {
                 edit.apply()
             }
         }
+    }
+
+    private val _agentUsage = MutableStateFlow<AgentUsageSnapshot?>(null)
+    val agentUsage: StateFlow<AgentUsageSnapshot?> = _agentUsage
+    private var agentUsageJob: Job? = null
+
+    /** On demand only; two scans at a time so ordinary live sync stays responsive. */
+    fun loadAgentUsage(backend: String) {
+        agentUsageJob?.cancel()
+        val (today, month) = agentUsageBoundaries()
+        val connector = targetConnectorForThread(null)
+            ?: _devices.value.filter { !it.revoked && it.type.equals("connector", true) }.singleOrNull()?.id
+        val requestKey = UUID.randomUUID().toString()
+        _agentUsage.value = AgentUsageSnapshot(backend, connector, today, month, requestKey)
+        val ticket = sessionSnapshotGuard.capture()
+        agentUsageJob = scope.launch {
+            if (BuildConfig.DEMO) {
+                val threads = agentUsageThreads(_threads.value, backend, connector, 1, _phoneArchivedIds.value, _archivingIds.value)
+                val entries = threads.mapIndexed { index, thread ->
+                    val base = (threads.size - index).toLong() * 147_000L
+                    thread.id to AgentUsageEntry("ready", AgentUsageAmount(base, false), AgentUsageAmount(base * 3, false), AgentUsageAmount(base * 7, false))
+                }.toMap()
+                _agentUsage.update { if (it?.requestKey == requestKey) it.copy(threads = threads, entries = entries, loading = false, reason = "演示数据") else it }
+                return@launch
+            }
+            if (_connection.value != ConnectionState.Online) {
+                _agentUsage.update { if (it?.requestKey == requestKey) it.copy(loading = false, reason = "电脑未连接，暂时无法读取用量") else it }
+                return@launch
+            }
+            val refreshError = runCatching { refreshThreads(full = true) }.exceptionOrNull()
+            if (!sessionSnapshotGuard.isCurrent(ticket)) return@launch
+            val computers = _devices.value.count { !it.revoked && it.type.equals("connector", true) }
+            val threads = agentUsageThreads(_threads.value, backend, connector, computers, _phoneArchivedIds.value, _archivingIds.value)
+            _agentUsage.update { if (it?.requestKey == requestKey) it.copy(threads = threads,
+                reason = if (refreshError != null) "对话列表暂未更新，以下为已同步的记录" else null) else it }
+            val gate = kotlinx.coroutines.sync.Semaphore(2)
+            kotlinx.coroutines.coroutineScope {
+                threads.map { thread -> async {
+                    gate.withPermit {
+                        if (_agentUsage.value?.requestKey != requestKey) return@withPermit
+                        val live = _threads.value.firstOrNull { it.id == thread.id && it.connectorId == thread.connectorId }
+                        if (live == null || agentUsageIsArchived(live, _phoneArchivedIds.value, _archivingIds.value)) return@withPermit
+                        val args = JSONObject().put("threadId", thread.id).put("periods", JSONObject()
+                            .put("todayFrom", today).put("monthFrom", month).put("requestKey", requestKey))
+                        try {
+                            val response = requestCommand("thread.usage.read", thread.id, args, 25_000, connector)
+                            val value = commandResult(response)
+                            // An old connector ignores periods and cannot deliver this statistic.
+                            if (value.optString("requestKey") != requestKey) {
+                                setAgentUsageEntry(requestKey, thread.id, AgentUsageEntry("unavailable", reason = "请更新这台电脑的连接器"))
+                            } else {
+                                applyAgentUsage(thread.id, value)
+                                if (value.optString("status") == "scanning") {
+                                    val finished = withTimeoutOrNull(180_000) {
+                                        _agentUsage.first { state -> state?.requestKey != requestKey || state.entries[thread.id]?.status != "scanning" }
+                                    }
+                                    if (finished == null) setAgentUsageEntry(requestKey, thread.id, AgentUsageEntry("unavailable", reason = "读取用量超时，请稍后重试"))
+                                }
+                            }
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (error: Exception) {
+                            setAgentUsageEntry(requestKey, thread.id, AgentUsageEntry("unavailable", reason = "暂时无法读取此对话的用量"))
+                        }
+                    }
+                } }.awaitAll()
+            }
+            _agentUsage.update { if (it?.requestKey == requestKey) it.copy(loading = false) else it }
+        }
+    }
+
+    fun dismissAgentUsage() { agentUsageJob?.cancel(); agentUsageJob = null; _agentUsage.value = null }
+
+    private fun setAgentUsageEntry(requestKey: String, threadId: String, next: AgentUsageEntry) {
+        _agentUsage.update { current ->
+            if (current?.requestKey != requestKey || current.threads.none { it.id == threadId }) current
+            else {
+                val old = current.entries[threadId]
+                if (old?.status == "ready" && next.status == "scanning") current
+                else current.copy(entries = current.entries + (threadId to next))
+            }
+        }
+    }
+
+    private fun applyAgentUsage(threadId: String, result: JSONObject) {
+        val state = _agentUsage.value ?: return
+        if (result.optString("requestKey") != state.requestKey || result.optString("backend") != state.backend ||
+            result.optLong("todayFrom") != state.todayFrom || result.optLong("monthFrom") != state.monthFrom) return
+        val source = result.optString("connectorId").takeIf { it.isNotBlank() && it != "null" }
+        if (source != null && state.connectorId != null && source != state.connectorId) return
+        setAgentUsageEntry(state.requestKey, threadId, parseAgentUsageEntry(result, state.todayFrom, state.monthFrom))
     }
 
     private fun attachmentJson(items: List<AttachmentUpload>): org.json.JSONArray {
@@ -2720,9 +3175,11 @@ class BridgeRepository(private val context: Context) {
         command("followup.steer_all", threadId, JSONObject().put("threadId", threadId).put("ids", ids))
     }
 
-    private fun sendCommand(requestId: String, action: String, threadId: String?, args: JSONObject) {
-        val pending = PendingAction(action, threadId, JSONObject(args.toString()))
+    private fun sendCommand(requestId: String, action: String, threadId: String?, args: JSONObject, targetConnector: String? = null) {
+        val pending = PendingAction(action, threadId, JSONObject(args.toString()), targetConnector = targetConnector)
         pendingActions[requestId] = pending
+        // Demo build: no computer; the script answers like a connector would.
+        if (BuildConfig.DEMO) { demo.handle(requestId, action, threadId, pending.args); return }
         persistPendingAction(requestId, pending)
         sendPendingAction(requestId, pending)
     }
@@ -2735,8 +3192,10 @@ class BridgeRepository(private val context: Context) {
             check(_agentAccounts.value["claude"]?.switching != true) { "电脑正在切换 Claude 账号，请稍后发送" }
         }
         val controlled = pending.action.startsWith("turn.") || pending.action in setOf("thread.compact", "thread.fork", "thread.rollback", "thread.archive", "thread.rename", "thread.pin")
-        val kind = if (pending.action.startsWith("file.")) "file.command" else if (controlled) "command.control" else "command"
-        sendFrame(kind, pending.threadId, JSONObject().put("requestId", requestId).put("action", pending.action).put("args", pending.args))
+        // Statistics are read-only and do not need durable relay history.
+        val kind = if (pending.action.startsWith("file.") || (pending.action == "thread.usage.read" && pending.args.has("periods"))) "file.command" else if (controlled) "command.control" else "command"
+        sendFrame(kind, pending.threadId, JSONObject().put("requestId", requestId).put("action", pending.action).put("args", pending.args),
+            pending.targetConnector ?: targetConnectorForThread(pending.threadId))
     }
 
     private fun retryPendingInstructionActions() {
@@ -2812,11 +3271,11 @@ class BridgeRepository(private val context: Context) {
         return response.optJSONObject("result") ?: response
     }
 
-    private suspend fun requestCommand(action: String, threadId: String?, args: JSONObject, timeoutMs: Long = 60_000): JSONObject {
+    private suspend fun requestCommand(action: String, threadId: String?, args: JSONObject, timeoutMs: Long = 60_000, targetConnector: String? = null): JSONObject {
         val id = UUID.randomUUID().toString(); val deferred = CompletableDeferred<JSONObject>(); pendingRequests[id] = deferred
         // withTimeoutOrNull, not catching the timeout: an outer timeout or a
         // cancellation still has to cancel the caller.
-        try { sendCommand(id, action, threadId, args); return withTimeoutOrNull(timeoutMs) { deferred.await() } ?: throw CommandTimeoutException(timeoutMs) }
+        try { sendCommand(id, action, threadId, args, targetConnector); return withTimeoutOrNull(timeoutMs) { deferred.await() } ?: throw CommandTimeoutException(timeoutMs) }
         finally { pendingRequests.remove(id); pendingActions.remove(id) }
     }
 
@@ -2859,72 +3318,206 @@ class BridgeRepository(private val context: Context) {
 
     fun listFiles(path: String = "") { runCatching { command("file.list", null, JSONObject().put("path", path).put("limit", 100)) }.onFailure { _message.value = it.message } }
 
-    /**
-     * A computer file a reply links to, fetched only when asked for and kept
-     * in the app's files until deleted on the 电脑取回的文件 page, so the phone
-     * can open it again without fetching. Several chunks are in flight at once,
-     * so the transfer isn't held up by each round trip to the computer.
-     * Progress is (received, total).
-     */
-    suspend fun fetchComputerFile(path: String, progress: (Long, Long) -> Unit = { _, _ -> }): File = withContext(Dispatchers.IO) {
-        val name = computerFileName(path).ifBlank { "file" }
-        // One folder per source path, so two files with the same name do not collide.
-        val folder = File(fetchedRoot(), Integer.toHexString(path.lowercase().hashCode())).apply { mkdirs() }
-        val target = File(folder, name); val partial = File(folder, "$name.part")
-        partial.delete()
-        val first = readComputerChunk(path, 0)
-        val total = first.total
-        var received = first.bytes.size.toLong()
-        java.io.RandomAccessFile(partial, "rw").use { output ->
-            output.write(first.bytes); progress(received, total)
-            val step = first.bytes.size.toLong()
-            if (!first.eof && step > 0) {
-                val lock = kotlinx.coroutines.sync.Mutex(); val gate = kotlinx.coroutines.sync.Semaphore(FETCH_PARALLEL)
-                kotlinx.coroutines.coroutineScope {
-                    (step until total step step).map { offset ->
-                        async {
-                            gate.withPermit {
-                                val chunk = readComputerChunk(path, offset)
-                                check(chunk.total == total) { "文件在取回过程中被修改了，请重试" }
-                                lock.withLock { output.seek(offset); output.write(chunk.bytes); received += chunk.bytes.size; progress(received, total) }
-                            }
-                        }
-                    }.awaitAll()
-                }
-            }
-        }
-        // An older copy of this source (fetched under another name) gives way to the new one.
-        folder.listFiles()?.filter { it != partial }?.forEach { it.delete() }
-        check(partial.renameTo(target)) { "保存文件失败" }
-        File(folder, FETCHED_META).writeText(JSONObject().put("path", path).put("name", name).put("fetchedAt", System.currentTimeMillis()).toString())
-        target
+    private fun fetchedAccountScope(): String = fetchedAccountScope(crypto.server(), crypto.accountId())
+
+    // A cached path is only reusable within the same account and computer.
+    // Old downloads lacked that identity; they remain in the files list but
+    // are never silently attributed to whichever computer happens to be selected.
+    private fun fetchedConnector(threadId: String?): String? = targetConnectorForThread(threadId)
+        ?: _devices.value.filter { !it.revoked && it.type.equals("connector", true) }.singleOrNull()?.id
+
+    private fun fetchedScope(threadId: String?): String? = fetchedFileScope(fetchedAccountScope(), fetchedConnector(threadId))
+
+    fun cachedComputerFile(path: String, threadId: String? = null): File? {
+        return findFetchedCopy(fetchedRoot(), path, fetchedScope(threadId), FETCHED_META)
     }
 
-    private class ComputerChunk(val bytes: ByteArray, val total: Long, val eof: Boolean)
+    /**
+     * The cached copy if the computer's file has not changed since it was
+     * fetched, or if the computer cannot be asked right now (the copy is still
+     * readable offline); null when it has changed and must be fetched again.
+     * One 1-byte read reports the file's size and modification time.
+     */
+    suspend fun currentCachedComputerFile(path: String, threadId: String? = null): File? = withContext(Dispatchers.IO) {
+        val cached = cachedComputerFile(path, threadId) ?: return@withContext null
+        val meta = runCatching { JSONObject(File(cached.parentFile, FETCHED_META).readText()) }.getOrNull()
+        val remote = runCatching {
+            val response = requestCommand("file.read", threadId, JSONObject().put("path", path).put("offset", 0).put("size", 1).put("binary", true),
+                FRESHNESS_TIMEOUT_MS, fetchedConnector(threadId))
+            commandResult(response)
+        }.getOrElse { error ->
+            Log.i(LOG_TAG, "cached file kept, computer not asked: ${error.message}")
+            return@withContext cached
+        }
+        val current = fetchedCopyIsCurrent(
+            cached.length(),
+            meta?.optLong("total", -1)?.takeIf { it >= 0 },
+            meta?.optLong("modifiedAt", 0)?.takeIf { it > 0 },
+            meta?.optLong("fetchedAt", 0)?.takeIf { it > 0 },
+            remote.optLong("total", -1),
+            remote.optLong("modifiedAt", 0).takeIf { it > 0 },
+        )
+        if (!current) Log.i(LOG_TAG, "cached file changed on the computer, fetching again")
+        cached.takeIf { current }
+    }
 
-    // Asks for the chunk as binary (sent beside the JSON, base64-encoded once);
-    // a connector from before 0.2.56 ignores that and sends base64 data inside it.
-    private suspend fun readComputerChunk(path: String, offset: Long): ComputerChunk {
-        val response = requestCommand("file.read", null, JSONObject().put("path", path).put("offset", offset).put("size", FETCH_CHUNK).put("binary", true), FETCH_CHUNK_TIMEOUT_MS)
+    private val fetchedLocks = Array(32) { Mutex() }
+
+    internal fun computerFileTransferKey(path: String, threadId: String?): String? =
+        fetchedScope(threadId)?.let { fetchedFileKey(it, path) }
+
+    internal fun cancelComputerFileTransfer(path: String, threadId: String?) {
+        computerFileTransferKey(path, threadId)?.let(fileTransfers::cancel)
+    }
+
+    /** Page observers can come and go while one account/computer/path fetch continues. */
+    suspend fun fetchComputerFile(path: String, threadId: String? = null, force: Boolean = false, maxBytes: Long = Long.MAX_VALUE,
+        expectedScope: String? = null, progress: (Long, Long) -> Unit = { _, _ -> }): File {
+        val key = computerFileTransferKey(path, threadId) ?: error("暂时无法确认文件来自哪台电脑")
+        if (expectedScope != null) check(fetchedScope(threadId) == expectedScope) { "请切回文档所属电脑以加载图片" }
+        // A size-limited image request must not change the outcome of a user-initiated file download.
+        val transferKey = if (maxBytes == Long.MAX_VALUE) key else "$key:bounded:$maxBytes"
+        val file = fileTransfers.await(transferKey, progress) { update ->
+            check(computerFileTransferKey(path, threadId) == key) { "电脑或账号已切换，请重新打开文件" }
+            fetchComputerFileOnce(path, threadId, force, maxBytes, expectedScope, update)
+        }
+        check(file.length() <= maxBytes) { "图片过大，无法在文档中预览" }
+        return file
+    }
+
+    /** Fetch once per account/computer/path; explicit refresh replaces the local copy. */
+    private suspend fun fetchComputerFileOnce(path: String, threadId: String?, force: Boolean, maxBytes: Long, expectedScope: String?, progress: (Long, Long) -> Unit): File = withContext(Dispatchers.IO) {
+        val connector = fetchedConnector(threadId) ?: error("暂时无法确认文件来自哪台电脑")
+        val scope = fetchedScope(threadId) ?: error("暂时无法确认文件来自哪台电脑")
+        if (expectedScope != null) check(scope == expectedScope) { "请切回文档所属电脑以加载图片" }
+        val accountScope = fetchedAccountScope()
+        val key = fetchedFileKey(scope, path)
+        val lock = fetchedLocks[(key.hashCode() and Int.MAX_VALUE) % fetchedLocks.size]
+        lock.withLock {
+            check(fetchedScope(threadId) == scope && fetchedAccountScope() == accountScope) { "电脑或账号已切换，请重新打开文件" }
+            if (!force) cachedComputerFile(path, threadId)?.let {
+                check(it.length() <= maxBytes) { "图片过大，无法在文档中预览" }
+                return@withLock it
+            }
+            val name = computerFileName(path).ifBlank { "file" }
+            check(name !in setOf(".", "..", FETCHED_META)) { "文件名不可用" }
+            val folder = File(fetchedRoot(), key).apply { mkdirs() }
+            val target = File(folder, name); val partial = File(folder, "$name.part")
+            partial.delete()
+            try {
+                val firstStarted = System.nanoTime()
+                val first = readComputerChunk(path, 0, threadId, scope, connector)
+                val firstMillis = ((System.nanoTime() - firstStarted) / 1_000_000).coerceAtLeast(1)
+                val total = first.total
+                check(total >= 0 && first.bytes.size.toLong() <= total) { "电脑返回的文件长度不正确" }
+                check(total <= maxBytes) { "图片过大，无法在文档中预览" }
+                var received = first.bytes.size.toLong()
+                java.io.RandomAccessFile(partial, "rw").use { output ->
+                    output.write(first.bytes); progress(received, total)
+                    val step = first.bytes.size.toLong()
+                    if (!first.eof && step > 0) {
+                        val writeLock = Mutex()
+                        var nextOffset = step
+                        var parallel = computerFetchParallelism(step, firstMillis)
+                        while (nextOffset < total) {
+                            val offsets = computerChunkOffsets(nextOffset, total, step, parallel)
+                            val batchStarted = System.nanoTime()
+                            var batchBytes = 0L
+                            kotlinx.coroutines.coroutineScope {
+                                offsets.map { offset -> async {
+                                    val chunk = readComputerChunk(path, offset, threadId, scope, connector)
+                                    check(chunk.total == total) { "文件在取回过程中被修改了，请重试" }
+                                    check(chunk.bytes.size.toLong() == minOf(step, total - offset)) { "文件分片不完整，请重试" }
+                                    writeLock.withLock { output.seek(offset); output.write(chunk.bytes); received += chunk.bytes.size; batchBytes += chunk.bytes.size; progress(received, total) }
+                                } }.awaitAll()
+                            }
+                            nextOffset = offsets.last() + minOf(step, total - offsets.last())
+                            val elapsed = ((System.nanoTime() - batchStarted) / 1_000_000).coerceAtLeast(1)
+                            parallel = computerFetchParallelism(batchBytes, elapsed)
+                        }
+                    }
+                }
+                check(fetchedScope(threadId) == scope && fetchedAccountScope() == accountScope) { "电脑或账号已切换，请重新打开文件" }
+                check(received == total) { "文件没有完整取回，请重试" }
+                // Do not remove the old cached copy until the replacement is complete.
+                runCatching { android.system.Os.rename(partial.absolutePath, target.absolutePath) }
+                    .getOrElse { error("保存文件失败：${it.message.orEmpty()}") }
+                File(folder, FETCHED_META).writeText(JSONObject().put("path", path).put("name", name)
+                    .put("scope", scope).put("accountScope", accountScope).put("threadId", threadId)
+                    .put("fetchedAt", System.currentTimeMillis()).put("total", total)
+                    .apply { if (first.modifiedAt > 0) put("modifiedAt", first.modifiedAt) }.toString())
+                target
+            } finally { if (partial.isFile) partial.delete() }
+        }
+    }
+
+    /** Reuse only the document's own account/computer cache, even after the selected computer changes. */
+    suspend fun fetchMarkdownImage(document: File, path: String, threadId: String?): File = withContext(Dispatchers.IO) {
+        check(document.isFile && document.parentFile?.parentFile == fetchedRoot()) { "文档来源无法确认，请重新取回文档" }
+        val meta = runCatching { JSONObject(File(document.parentFile, FETCHED_META).readText()) }.getOrNull()
+            ?: error("文档来源无法确认，请重新取回文档")
+        val scope = trustedMarkdownDocumentScope(meta.optString("scope"), meta.optString("accountScope"), fetchedAccountScope())
+            ?: error("文档来源无法确认，请重新取回文档")
+        findFetchedCopy(fetchedRoot(), path, scope, FETCHED_META)?.let {
+            check(it.length() <= MAX_MARKDOWN_IMAGE_BYTES) { "图片过大，无法在文档中预览" }
+            return@withContext it
+        }
+        check(canFetchMarkdownCompanion(scope, fetchedScope(threadId))) { "请切回文档所属电脑以加载图片" }
+        fetchComputerFile(path, threadId, maxBytes = MAX_MARKDOWN_IMAGE_BYTES, expectedScope = scope)
+    }
+
+    private class ComputerChunk(val bytes: ByteArray, val total: Long, val eof: Boolean, val modifiedAt: Long = 0)
+
+    private suspend fun readComputerChunk(path: String, offset: Long, threadId: String? = null, expectedScope: String? = null, connector: String? = null): ComputerChunk = fileChunkSlots.withPermit {
+        if (expectedScope != null) check(fetchedScope(threadId) == expectedScope) { "电脑或账号已切换，请重新打开文件" }
+        val response = requestCommand("file.read", threadId, JSONObject().put("path", path).put("offset", offset).put("size", FETCH_CHUNK).put("binary", true), FETCH_CHUNK_TIMEOUT_MS, connector)
         val result = commandResult(response)
         val bytes = response.opt(FILE_BLOB_FIELD) as? ByteArray ?: Base64.decode(result.optString("data"), Base64.DEFAULT)
-        return ComputerChunk(bytes, result.optLong("total", offset + bytes.size), result.optBoolean("eof") || bytes.isEmpty())
+        ComputerChunk(bytes, result.optLong("total", offset + bytes.size), result.optBoolean("eof") || bytes.isEmpty(), result.optLong("modifiedAt", 0))
     }
 
     private fun fetchedRoot() = File(context.filesDir, "fetched")
 
-    /** Files fetched from the computer, newest first. */
+    /** Keep pre-upgrade downloads visible; only scoped entries are auto-reused. */
     fun fetchedFiles(): List<FetchedFile> = fetchedRoot().listFiles().orEmpty().mapNotNull { folder ->
         val meta = runCatching { JSONObject(File(folder, FETCHED_META).readText()) }.getOrNull() ?: return@mapNotNull null
-        val file = File(folder, meta.optString("name")).takeIf { it.isFile } ?: return@mapNotNull null
-        FetchedFile(file, meta.optString("path"), meta.optLong("fetchedAt", file.lastModified()))
+        val accountScope = meta.optString("accountScope")
+        if (accountScope.isNotEmpty() && accountScope != fetchedAccountScope()) return@mapNotNull null
+        val name = meta.optString("name")
+        if (name.isBlank() || name in setOf(".", "..", FETCHED_META) || name != computerFileName(name)) return@mapNotNull null
+        val file = File(folder, name).takeIf { it.isFile } ?: return@mapNotNull null
+        FetchedFile(file, meta.optString("path"), meta.optLong("fetchedAt", file.lastModified()),
+            meta.optString("threadId").takeIf { it.isNotBlank() && it != "null" }, meta.optString("scope").isBlank())
     }.sortedByDescending { it.fetchedAt }
+
+    fun legacyComputerFile(path: String): File? = fetchedFiles().firstOrNull { it.legacy && it.path == path }?.file
+
+    /** Adopt a legacy copy only after the user confirms its source computer. */
+    suspend fun adoptLegacyComputerFile(path: String, oldFile: File, threadId: String?): File = withContext(Dispatchers.IO) {
+        val scope = fetchedScope(threadId) ?: error("暂时无法确认文件来自哪台电脑")
+        val account = fetchedAccountScope()
+        val key = fetchedFileKey(scope, path)
+        fetchedLocks[(key.hashCode() and Int.MAX_VALUE) % fetchedLocks.size].withLock {
+            cachedComputerFile(path, threadId)?.let { return@withLock it }
+            check(fetchedScope(threadId) == scope && oldFile.isFile && oldFile.parentFile?.parentFile == fetchedRoot()) { "本机副本已不存在，请重新取回" }
+            val oldFolder = oldFile.parentFile ?: error("本机副本不可用")
+            val meta = runCatching { JSONObject(File(oldFolder, FETCHED_META).readText()) }.getOrNull() ?: error("本机副本记录不可用")
+            check(meta.optString("scope").isBlank() && meta.optString("path") == path && meta.optString("name") == oldFile.name) { "本机副本来源不匹配" }
+            val target = File(fetchedRoot(), key)
+            check(!target.exists() && oldFolder.renameTo(target)) { "无法整理本机副本，请从已取回文件中打开" }
+            val updated = meta.put("scope", scope).put("accountScope", account).put("threadId", threadId)
+            val temporary = File(target, "$FETCHED_META.tmp")
+            temporary.writeText(updated.toString())
+            android.system.Os.rename(temporary.absolutePath, File(target, FETCHED_META).absolutePath)
+            check(fetchedScope(threadId) == scope && fetchedAccountScope() == account) { "电脑或账号已切换，请重新打开文件" }
+            File(target, oldFile.name)
+        }
+    }
 
     fun deleteFetched(file: File) { file.parentFile?.takeIf { it.parentFile == fetchedRoot() }?.deleteRecursively() }
 
     fun clearFetched() {
         fetchedRoot().deleteRecursively()
-        // Files opened before 0.1.209 were kept in the cache.
         File(context.cacheDir, "opened").deleteRecursively()
     }
 
@@ -3092,7 +3685,8 @@ class BridgeRepository(private val context: Context) {
 
     suspend fun loadDraft(threadId: String): String = withContext(Dispatchers.IO) {
         draftMutex.withLock {
-            val row = database.cache().draft(threadId) ?: return@withLock ""
+            // The emulator can't type Chinese; demo threads start with a ready draft.
+            val row = database.cache().draft(threadId) ?: return@withLock if (BuildConfig.DEMO) DemoData.draft(threadId) else ""
             runCatching {
                 crypto.decrypt("draft", threadId, threadId, row.nonce, row.ciphertext).optString("text")
             }.getOrDefault("")
@@ -3124,6 +3718,7 @@ class BridgeRepository(private val context: Context) {
     }
 
     suspend fun refreshDevices() = withContext(Dispatchers.IO) {
+        if (BuildConfig.DEMO) return@withContext
         val sessionTicket = sessionSnapshotGuard.capture()
         val v2 = usingV2()
         val response = if (v2) get("/api/v2/account") else get("/api/v1/devices")
@@ -3199,17 +3794,20 @@ class BridgeRepository(private val context: Context) {
     }
 
     private fun resetSessionView() {
+        fileTransfers.cancelAll()
+        dismissAgentUsage()
         watchThread(null)
         sessionSnapshotGuard.invalidate {
+            historyPreviews.clear()
             _threads.value = emptyList(); _items.value = emptyList(); _historyLoadState.value = HistoryLoadState()
-            _liveStatuses.value = emptyMap(); _queuedInstructions.value = emptyMap(); _historySyncing.value = emptySet()
+            _liveStatuses.value = emptyMap(); _queuedInstructions.value = emptyMap(); _historySyncing.value = emptySet(); stopFeedback.clear()
             _threadOwners.value = emptyMap(); _connectorSeenAt.value = emptyMap(); _selectedConnectorId.value = null
-            _approval.value = null; _claudeUsage.value = null; _dshUsage.value = null; _pcLoad.value = null; _account.value = null
+            _approval.value = null; _claudeUsage.value = null; _dshUsage.value = null; _pcLoad.value = null; _computerScreens.value = emptyMap(); computerScreenNames.clear(); _account.value = null
             _agentAccounts.value = emptyMap(); _accountReadErrors.value = emptyMap(); _accountsAvailable.value = false; _accountRequestPending.value = false
             _agentOpenStates.value = emptyMap(); _agentOpenStatesByConnector.value = emptyMap(); _agentInstalledByConnector.value = emptyMap(); agentSnapshots.clear()
-            _dshCatalog.value = null; _hermesCatalog.value = null; _dshPending.value = null; _dshPendingLoading.value = false
-            _claudeModels.value = emptyList(); _threadSettings.value = emptyMap(); _turnDurations.value = emptyMap()
-            _lightDetails.value = emptyMap(); _lightFetching.value = emptySet(); lightDetailsThread = null
+            _dshCatalog.value = null; _hermesCatalog.value = null; _antigravityCatalog.value = null; _dshPending.value = null; _dshPendingLoading.value = false
+            _claudeModels.value = emptyList(); claudeModelSnapshotAt = 0L; _threadSettings.value = emptyMap(); _turnDurations.value = emptyMap()
+            _lightDetails.value = emptyMap(); _lightFetching.value = emptySet(); _lightProgress.value = emptyMap(); lightDetailsThread = null
             _attachments.value = emptyMap(); _usageLoading.value = emptySet(); _devices.value = emptyList()
             _files.value = emptyList(); _filePath.value = ""; _createdThreadId.value = null; _claudeWorkspaceTrust.value = null
             waitingSeenAt.clear(); lightModeSentAt.clear()
@@ -3224,6 +3822,7 @@ class BridgeRepository(private val context: Context) {
         }
         synchronized(tokenUsageLock) {
             _conversationUsage.value = emptyMap()
+            _completionTimes.value = emptyMap(); pinnedCompletionJob?.cancel(); usageFinishedSequence.value = emptyMap()
             _codexQuestionStates.value = emptyMap(); _codexQuestion.value = null
         }
         desktopCodexPins.clear()
@@ -3699,6 +4298,11 @@ class BridgeRepository(private val context: Context) {
         // Fetching a large file fills the socket with chunks, and the beats queued behind
         // them can arrive later than CONNECTOR_HEARTBEAT_TIMEOUT_MS on a slow network.
         if ((kind == "file.result" || kind == "command.result") && connectorHeartbeatAt > 0L) connectorHeartbeatAt = System.currentTimeMillis()
+        applyFrame(frame, kind, threadId, payload)
+    }
+
+    /** The decrypted part of [handleFrame]; the demo build feeds it made-up frames too. */
+    private fun applyFrame(frame: JSONObject, kind: String, threadId: String?, payload: JSONObject) {
         when (kind) {
             "approval.request" -> {
                 if (!_claudeConsent.value.enabled && (payload.optString("backend") == "claude" || _threads.value.any { it.id == threadId && it.backend == "claude" })) return
@@ -3781,6 +4385,7 @@ class BridgeRepository(private val context: Context) {
                     reconcileLiveStatusSnapshot(payload)
                     reconcileDesktopCodexPins(payload)
                     reconcileDesktopClaudePins(payload)
+                    reconcileComputerScreen(frame, payload)
                     reconcileLightMode(frame.optString("sourceDeviceId").takeIf { it.isNotBlank() && it != "null" } ?: payload.optString("connectorId").takeIf { it.isNotBlank() && it != "null" }, payload)
                     if (!fromOtherConnector(frame)) parsePcLoad(payload.optJSONObject("pcLoad"), System.currentTimeMillis())?.let { _pcLoad.value = it }
                     // Only a full presence (with agents) carries it; null there clears it.
@@ -3835,7 +4440,7 @@ class BridgeRepository(private val context: Context) {
                         // middle (images from tools). Only the newest page is
                         // ever re-fetched, so drop the cached copy and reopen.
                         if (payload.optString("backend") == "claude") {
-                            itemsCursors.remove(threadId)
+                            dropItemsCursor(threadId)
                             database.cache().deleteItems(threadId)
                             if (activeThreadId == threadId) runCatching { loadThread(threadId) }
                         }
@@ -3945,6 +4550,12 @@ class BridgeRepository(private val context: Context) {
             // persists each item), so agent.event only drives notifications and
             // keeps the active thread fresh.
             "claude.usage" -> if (!fromOtherConnector(frame)) parseClaudeUsage(payload)
+            "claude.models" -> {
+                val at = payload.optLong("snapshotAt", 0L)
+                if (acceptsClaudeModelSnapshot(_selectedConnectorId.value, null, frame.optString("sourceDeviceId"), at, claudeModelSnapshotAt)) {
+                    applyClaudeModelRows(payload.optJSONArray("models"), at)
+                }
+            }
             "dsh.usage" -> if (!fromOtherConnector(frame)) applyDshUsage(payload)
             "accounts.state" -> if (!fromOtherConnector(frame)) applyAgentAccounts(payload)
             "codex.usage" -> if (!fromOtherConnector(frame)) applyCodexUsage(payload)
@@ -3972,13 +4583,20 @@ class BridgeRepository(private val context: Context) {
                 notificationSink?.invoke("任务失败", error, false)
             }
             "command.result", "file.result" -> {
-                val requestId = payload.optString("requestId"); pendingInstructionRetries.remove(requestId); pendingInstructionRetryAt.remove(requestId); pendingInstructionTimeouts.remove(requestId)?.cancel(); val pending = pendingActions.remove(requestId); deletePendingAction(requestId)
+                if (payload.optString("event") == "thread.usage.stats") {
+                    if (threadId != null) payload.optJSONObject("result")?.let { applyAgentUsage(threadId, it) }
+                    return
+                }
+                val requestId = payload.optString("requestId"); pendingInstructionRetries.remove(requestId); pendingInstructionRetryAt.remove(requestId); pendingInstructionTimeouts.remove(requestId)?.cancel(); val pending = pendingActions.remove(requestId)
+                // File replies are ephemeral; they never had a durable command row to delete.
+                if (kind != "file.result") deletePendingAction(requestId)
                 pendingRequests.remove(requestId)?.complete(payload)
                 // Statistics results/failures are handled inline in the panel;
                 // background reads must never open a global alert.
                 if (pending?.action == "thread.usage.read") return
                 if (!payload.optBoolean("ok")) {
                     val error = payload.optString("error", "操作失败")
+                    if (pending?.action == "turn.stop" && pending.threadId != null && !stopFeedback.rejected(pending.threadId, requestId)) return
                     if (pending?.action in setOf("dsh.pending", "dsh.answer")) _dshPendingLoading.value = false
                     val retryableAgentLoop = isRetryableCodexAgentLoopError(error)
                     if (pending?.action == "capabilities") {
@@ -3992,7 +4610,8 @@ class BridgeRepository(private val context: Context) {
                             if (retryableAgentLoop) "Codex 后台正在恢复，消息和图片已保存，连接器会自动重试" else error,
                         )
                     }
-                    if (shouldShowCommandFailure(pending?.action)) {
+                    // A fresh read is one the user asked for by opening the settings dialog.
+                    if (shouldShowCommandFailure(pending?.action) || (pending?.action == "thread.settings.read" && pending.args.optBoolean("refresh"))) {
                         _message.value = if (retryableAgentLoop)
                             "Codex 后台正在恢复，消息和图片已保存，稍后会自动重试"
                         else if (error.contains("thread not found", true))
@@ -4067,7 +4686,17 @@ class BridgeRepository(private val context: Context) {
                     }
                 }
                 if (result is org.json.JSONArray && result.length() >= 2) parseCapabilities(result)
-                if (result is JSONObject && pending?.action == "backends.capabilities") parseBackendCapabilities(result)
+                if (result is JSONObject && pending?.action == "backends.capabilities") {
+                    val caps = result.optJSONObject("backends")?.optJSONObject("claude")?.optJSONObject("capabilities")
+                    val source = frame.optString("sourceDeviceId")
+                    if (acceptsClaudeModelSnapshot(_selectedConnectorId.value, pending.targetConnector, source, 0L, 0L)) {
+                        // Usage and the model catalogue have separate freshness; an
+                        // older model snapshot must not discard newer usage data.
+                        parseClaudeUsage(caps?.optJSONObject("usage"))
+                        val at = caps?.optLong("modelsSnapshotAt", 0L) ?: 0L
+                        if (acceptsClaudeModelSnapshot(_selectedConnectorId.value, pending.targetConnector, source, at, claudeModelSnapshotAt)) parseBackendCapabilities(result)
+                    }
+                }
                 if (result is JSONObject && pending?.action in setOf("claude.usage", "claude.usage.refresh", "claude.statusline.set")) parseClaudeUsage(result)
                 if (result is JSONObject && pending?.action == "dsh.usage") applyDshUsage(result)
                 if (result is JSONObject && pending?.action == "thread.pin" && pending.threadId != null) {
@@ -4171,15 +4800,16 @@ class BridgeRepository(private val context: Context) {
     }
 
     private fun parseBackendCapabilities(result: JSONObject) {
-        parseClaudeUsage(result.optJSONObject("backends")?.optJSONObject("claude")?.optJSONObject("capabilities")?.optJSONObject("usage"))
-        val rows = result.optJSONObject("backends")?.optJSONObject("claude")?.optJSONObject("capabilities")?.optJSONArray("models") ?: return
-        val models = (0 until rows.length()).mapNotNull { index ->
-            val row = rows.optJSONObject(index) ?: return@mapNotNull null
-            val value = row.optString("value").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            val efforts = row.optJSONArray("efforts")?.let { array -> (0 until array.length()).map { array.optString(it) }.filter { it.isNotBlank() } }.orEmpty()
-            ClaudeModel(value, row.optString("label").ifBlank { value }, efforts)
+        val caps = result.optJSONObject("backends")?.optJSONObject("claude")?.optJSONObject("capabilities") ?: return
+        applyClaudeModelRows(caps.optJSONArray("models"), caps.optLong("modelsSnapshotAt", 0L))
+    }
+
+    private fun applyClaudeModelRows(rows: JSONArray?, snapshotAt: Long) {
+        val models = parseClaudeModelRows(rows)
+        if (models.isNotEmpty() || rows != null && snapshotAt > 0) {
+            _claudeModels.value = models
+            if (snapshotAt > 0) claudeModelSnapshotAt = snapshotAt
         }
-        if (models.isNotEmpty()) _claudeModels.value = models
     }
 
     // The longest Codex window (the weekly one) as remaining share and reset time.
@@ -4365,7 +4995,14 @@ class BridgeRepository(private val context: Context) {
 
     private suspend fun trimCache() {
         val file = context.getDatabasePath("fengzhu-cache.db")
-        if (file.exists() && file.length() > 500L * 1024 * 1024) database.cache().trimItems(300)
+        if (file.exists() && file.length() > 500L * 1024 * 1024) {
+            database.cache().trimItems(300)
+            // Trimming drops the least recently used rows of any conversation,
+            // so a cache may now miss rows its saved stamp says it has: the
+            // next open of each reads the newest page again.
+            val stale = historyCachePrefs.all.keys.filter { it.startsWith("itemsCursor:") }
+            if (stale.isNotEmpty()) historyCachePrefs.edit().apply { stale.forEach { remove(it) } }.apply()
+        }
     }
 
     private fun historyCacheTimestampKey(threadId: String) = "syncedAt:$threadId"
@@ -4546,6 +5183,17 @@ class BridgeRepository(private val context: Context) {
     }
 
     /** Pi: the models PI WEB offers for this session, and its current model / thinking level. */
+    suspend fun newTaskModels(backend: String): List<Pair<String, String>> = withContext(Dispatchers.IO) {
+        require(backend in setOf("pi", "hermes", "dsh"))
+        val result = commandResult(requestCommand("$backend.models.list", null, JSONObject(), 30_000))
+        val rows = result.optJSONArray("models") ?: error("请确认电脑端 Agent 已连接，并更新连接器")
+        (0 until rows.length()).mapNotNull { index ->
+            val row = rows.optJSONObject(index) ?: return@mapNotNull null
+            val id = row.optString("id").trim().takeIf(String::isNotBlank) ?: return@mapNotNull null
+            id to row.optString("label").ifBlank { id }
+        }.distinctBy { it.first }
+    }
+
     suspend fun piModels(threadId: String): PiModelChoice = withContext(Dispatchers.IO) {
         val result = commandResult(requestCommand("pi.models", threadId, JSONObject().put("threadId", threadId), 75_000))
         val models = result.optJSONObject("catalog")?.optJSONArray("models")?.let { array ->
@@ -4640,6 +5288,24 @@ class BridgeRepository(private val context: Context) {
             lastCompletedTurnId[threadId] = turnId
         }
         liveStatusUpdatedAt[threadId] = eventAt
+        if (isTurnBusyStatus(status) && !isTurnBusyStatus(_liveStatuses.value[threadId].orEmpty())) stopFeedback.newTurn(threadId)
+        if (stopFeedback.terminal(threadId, status, quiet)) KhVibration.stopped(context, appVisible)
+        // A replay is harmless: keep the actual source timestamp, never the phone's receipt time.
+        // Quiet/inferred endings are not proof. Older agents may omit a turn ID,
+        // so accept their terminal event only if this phone observed the start.
+        if (isConfirmedCompletionForSort(status, quiet, updatedAt, turnId, turnStartedAt.containsKey(threadId))) {
+            val key = completionTimeKey(threadId)
+            synchronized(tokenUsageLock) {
+                val priorAt = historyCachePrefs.getLong(key, 0L)
+                val priorTurnId = historyCachePrefs.getString("$key:turn", null)
+                // Some connector status refreshes carry a new publication time
+                // for the same turn. They must not make an old task look new.
+                if (isNewCompletionForSort(eventAt, turnId, priorAt, priorTurnId)) {
+                    historyCachePrefs.edit().putLong(key, eventAt).putString("$key:turn", turnId.orEmpty()).apply()
+                    _completionTimes.update { it + (threadId to maxOf(eventAt, it[threadId] ?: 0L)) }
+                }
+            }
+        }
         if (!quiet && status.lowercase() in setOf("completed", "failed", "cancelled", "canceled", "aborted", "interrupted")) {
             _codexQuestionStates.value[threadId]?.takeIf { question ->
                 question.pending && eventAt >= question.askedAt && (turnId.isNullOrBlank() || question.turnId == null || question.turnId == turnId)
@@ -4698,6 +5364,13 @@ class BridgeRepository(private val context: Context) {
         payload.optJSONObject("installed")?.let { installed ->
             val map = installed.keys().asSequence().mapNotNull { id -> (installed.opt(id) as? Boolean)?.let { id to it } }.toMap()
             _agentInstalledByConnector.update { it + (connectorId to map) }
+        }
+        payload.optJSONObject("system")?.let { system ->
+            val platform = system.optString("platform").takeIf { it.isNotBlank() && it != "null" } ?: return@let
+            val home = system.optString("home").takeIf { it.isNotBlank() && it != "null" }
+            val hermes = system.optString("hermes").takeIf { it.isNotBlank() && it != "null" }
+            val next = ComputerSystem(platform, home, hermes)
+            if (_computerSystemByConnector.value[connectorId] != next) _computerSystemByConnector.update { it + (connectorId to next) }
         }
         val at = payload.optLong("sentAt")
         if (at <= 0 || at < (agentSnapshots[connectorId]?.first ?: 0)) return
@@ -4911,19 +5584,17 @@ class BridgeRepository(private val context: Context) {
         // A file.read chunk's bytes, put on the decrypted payload (never serialised).
         private const val FILE_BLOB_FIELD = "_blob"
         private const val FETCH_CHUNK = 512 * 1024
-        // Three chunks keep a fast link busy; more only queue on a slow computer upload
-        // (~70 KB/s seen), where each waits behind the others for its reply.
-        private const val FETCH_PARALLEL = 3
+        // Fast links may use up to eight chunks; slow uploads retain the old limit of three.
         // Long enough for a chunk queued behind the others on such an upload.
         private const val FETCH_CHUNK_TIMEOUT_MS = 120_000L
         private const val FETCHED_META = ".khlink-fetched.json"
+        private const val FRESHNESS_TIMEOUT_MS = 8_000L
         const val TURN_END_SETTLE_MS = 20_000L
         const val MIN_ANNOUNCED_TURN_MS = 3_000L
         const val MAX_ATTACHMENT_BYTES = 25L * 1024L * 1024L
         const val UPLOAD_CHUNK_BYTES = 64 * 1024
         const val UPLOAD_READ_TIMEOUT_MS = 30_000L
         const val UPLOAD_OPERATION_TIMEOUT_MS = 180_000L
-        const val HISTORY_CACHE_LIMIT = 6_000
         const val HISTORY_PAGE_SIZE = 30
         // Recently active conversations kept warm in the local cache.
         const val HISTORY_PREFETCH_THREADS = 8
@@ -5071,7 +5742,8 @@ class BridgeRepository(private val context: Context) {
             reconcileDeliveredInstructions(threadId, _items.value)
             return
         }
-        val show = followupFailureNotices.claim(threadId, item, activeThreadId)
+        val backend = _threads.value.firstOrNull { it.id == threadId }?.backend
+        val show = followupFailureNotices.claim(threadId, item, activeThreadId, backend)
         followupNoticePrefs.edit().putStringSet("seen", followupFailureNotices.snapshot()).apply()
         if (show) _message.value = reason
     }
@@ -5091,14 +5763,18 @@ class BridgeRepository(private val context: Context) {
     }
 
     private fun reconcileDeliveredInstructions(threadId: String, history: List<HistoryItem>) {
-        val delivered = history.asSequence().filter { it.type == "userMessage" }.map { normalizeInstructionText(it.text) }.toSet()
-        if (delivered.isEmpty()) return
-        // Desktop-queued items are already accepted by the connector. Once the
-        // corresponding user message is visible in history, remove the queue row
-        // regardless of whether the started event was missed during reconnect.
-        val remaining = _queuedInstructions.value[threadId].orEmpty().filterNot { isQueuedInstructionDelivered(it, history) }
-        _queuedInstructions.value = if (remaining.isEmpty()) _queuedInstructions.value - threadId
-            else _queuedInstructions.value + (threadId to remaining)
+        if (_queuedInstructions.value[threadId].isNullOrEmpty() || history.none { it.type == "userMessage" }) return
+        // A matching history row can retire a queued message even if the phone
+        // missed its started receipt during a reconnect.
+        _queuedInstructions.update { queues ->
+            val pending = queues[threadId] ?: return@update queues
+            val remaining = pending.filterNot { isQueuedInstructionDelivered(it, history) }
+            when {
+                remaining.size == pending.size -> queues
+                remaining.isEmpty() -> queues - threadId
+                else -> queues + (threadId to remaining)
+            }
+        }
     }
 
     private fun updateThreadActivity(threadId: String?, updatedAt: Long) {
@@ -5111,7 +5787,9 @@ class BridgeRepository(private val context: Context) {
 
     private fun decodeItem(threadId: String, row: JSONObject): HistoryItem? = runCatching {
         val value = crypto.decrypt("history.item", threadId, row.getString("id"), row.getString("nonce"), row.getString("ciphertext"))
-        if (isInternalContextMessage(value.optString("text"))) return@runCatching null
+        if (isInternalContextMessage(value.optString("text")) ||
+            isLegacyClaudeCompactionSummary(value.optString("type"), value.optString("text"),
+                _threads.value.firstOrNull { it.id == threadId }?.backend)) return@runCatching null
         // Items an older connector uploaded that should never have been shown.
         if (value.optString("type") == "hidden") return@runCatching null
         // Connector 0.1.14 mislabeled normal rollout event messages as errors.
@@ -5155,13 +5833,34 @@ class BridgeRepository(private val context: Context) {
     private fun decodeCachedItem(threadId: String, row: CachedItem): HistoryItem? = decodeItem(threadId,
         JSONObject().put("id", row.id).put("itemOrder", row.itemOrder).put("nonce", row.nonce).put("ciphertext", row.ciphertext).put("createdAt", row.createdAt))
 
-    private suspend fun readCachedHistory(threadId: String): List<HistoryItem> {
-        // Keep large image/tool payloads out of CursorWindow. They remain in the
-        // database for bookkeeping and are fetched from the latest online page.
-        return database.cache()
-            .items(threadId, HISTORY_CACHE_LIMIT, HISTORY_CACHE_ITEM_MAX_CHARS)
-            .mapNotNull { decodeCachedItem(threadId, it) }
-            .sortedBy { it.order }
+    private suspend fun decodeCachedHistory(threadId: String, rows: List<CachedItem>): List<HistoryItem> {
+        val context = currentCoroutineContext()
+        return rows.asReversed().mapNotNull { row ->
+            context.ensureActive()
+            decodeCachedItem(threadId, row)
+        }
+    }
+
+    private data class CachedHistoryWindow(val items: List<HistoryItem> = emptyList(), val hasOlder: Boolean = false) {
+        fun hasOlderAfter(trimmedBefore: Long?): Boolean =
+            hasOlder && (trimmedBefore == null || (items.firstOrNull()?.order ?: Long.MIN_VALUE) > trimmedBefore)
+    }
+
+    /** Leave old rows on disk until the reader scrolls, including on an offline phone. */
+    private suspend fun readCachedWindow(threadId: String, before: Long? = null): CachedHistoryWindow {
+        val size = HISTORY_PAGE_SIZE * 2
+        val dao = database.cache()
+        var cursor = before
+        while (true) {
+            val rows = if (cursor == null) dao.items(threadId, size + 1, HISTORY_CACHE_ITEM_MAX_CHARS)
+                else dao.itemsBefore(threadId, cursor, size + 1, HISTORY_CACHE_ITEM_MAX_CHARS)
+            val visible = decodeCachedHistory(threadId, rows.take(size))
+            val hasOlder = rows.size > size
+            if (visible.isNotEmpty() || !hasOlder) return CachedHistoryWindow(visible, hasOlder)
+            // A whole window may contain only hidden system items. Progress by
+            // raw order so it cannot strand older readable messages.
+            cursor = rows[size - 1].itemOrder
+        }
     }
 
     // The demo build has no session: every request fails quietly instead of

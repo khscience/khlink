@@ -4,15 +4,23 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { Dpapi, isPlatformSupported } = require('@primno/dpapi');
 
-const home = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'FengzhuAgentBridge');
+// macOS: ~/Library/Application Support, where the desktop app's config_dir()
+// also points; secrets are sealed with a key kept in the login Keychain.
+function configRoot(platform = process.platform, env = process.env, homedir = os.homedir()) {
+  if (platform === 'darwin') return path.join(homedir, 'Library', 'Application Support');
+  return env.APPDATA || path.join(homedir, 'AppData', 'Roaming');
+}
+const home = path.join(configRoot(), 'FengzhuAgentBridge');
 const file = path.join(home, 'config.json');
 
 function protect(value) {
+  if (process.platform === 'darwin') return require('./mac-secret-store').protect(value);
   if (!isPlatformSupported) throw new Error('Windows DPAPI is unavailable');
   return Buffer.from(Dpapi.protectData(Buffer.from(value, 'utf8'), null, 'CurrentUser')).toString('base64');
 }
 
 function unprotect(value) {
+  if (process.platform === 'darwin') return require('./mac-secret-store').unprotect(value);
   return Buffer.from(Dpapi.unprotectData(Buffer.from(value, 'base64'), null, 'CurrentUser')).toString('utf8');
 }
 
@@ -39,7 +47,7 @@ function loadConfig() {
 }
 
 function saveConfig(input) {
-  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
   const protocolVersion = Number(input.protocolVersion) === 2 ? 2 : 1;
   const publicPart = {
     protocolVersion,
@@ -66,4 +74,4 @@ function updateSecrets(config, changes) {
   return saveConfig({ ...config, ...changes });
 }
 
-module.exports = { file, home, protect, unprotect, loadConfig, saveConfig, updateSecrets, currentServerUrl, relayEnabled, DEFAULT_SERVER_URL };
+module.exports = { configRoot, file, home, protect, unprotect, loadConfig, saveConfig, updateSecrets, currentServerUrl, relayEnabled, DEFAULT_SERVER_URL };

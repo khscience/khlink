@@ -7,6 +7,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HomeAgentNavigationTest {
+    @Test fun chatTabLabelsCoverEverySupportedAgent() {
+        val labels = HOME_AGENT_IDS.associateWith(::chatAgentTabLabel)
+        assertEquals(HOME_AGENT_IDS.size, labels.values.toSet().size)
+        assertTrue(labels.values.all { it.isNotBlank() && it.length <= 4 })
+        assertEquals("我", chatAgentTabLabel("me"))
+    }
     @Test fun computerPresenceDoesNotClaimOnlineFromAStaleSnapshotWhenPhoneHasNoNetwork() {
         assertEquals(ComputerPresence.Unknown, computerPresence(false, 99_000L, 100_000L))
         assertEquals("状态待确认", computerPresenceLabel(computerPresence(false, 99_000L, 100_000L)))

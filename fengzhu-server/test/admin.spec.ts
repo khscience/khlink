@@ -11,6 +11,7 @@ import { EntitlementService } from '../src/entitlement.service'
 import { AdminController } from '../src/admin.controller'
 import { downloadEvent } from '../src/download-metrics.service'
 import { PairingService } from '../src/pairing.service'
+import { TrafficService, trafficMonth } from '../src/traffic.service'
 
 describe('KH Link website administration', () => {
   let database: DatabaseService; let directory: string; let saved: NodeJS.ProcessEnv
@@ -57,7 +58,7 @@ describe('KH Link website administration', () => {
     const auth = new V2AuthService(database); const session = auth.issue(id, 'phone', 'android') as { accessToken: string; refreshToken: string }
     const pairing = new PairingService(database); const qr = pairing.create(id, 'phone') as { id: string; secret: string }
     const relay = { disconnectAccount: jest.fn(), accountDeviceOnline: () => false, accountOnlineCount: () => 0, onlineConnectorCount: () => 0 }
-    const controller = new AdminController(database, relay as never, new EntitlementService(database))
+    const controller = new AdminController(database, relay as never, new EntitlementService(database), new TrafficService(database))
     const input = { subject: '88', operation: 'ban', actorSubject: '1', reason: 'Fixture ban', eventId: 'fixture-ban-event-88', confirmed: true }
     controller.action(input); expect(relay.disconnectAccount).toHaveBeenCalledWith(id)
     database.upsertAccount({ subject: '88', displayName: 'Fixture', disabled: false })
@@ -68,6 +69,35 @@ describe('KH Link website administration', () => {
     expect(JSON.stringify(data.devices)).not.toMatch(/publicKey|keyEnvelope|refreshHash|not-returned/)
     expect(() => controller.action({ ...input, operation: 'revoke-device', deviceId: 'foreign', eventId: 'fixture-revoke-event-88' })).toThrow(/owned/)
     controller.action({ ...input, operation: 'revoke-device', deviceId: 'phone', eventId: 'fixture-revoke-device-88' }); expect(() => auth.verify(session.accessToken)).toThrow()
+  })
+  it('reports monthly relay traffic and stored bytes per account, largest first, without key material', () => {
+    process.env.KH_LINK_FREE_MONTHLY_BYTES = '1000'
+    const traffic = new TrafficService(database); const entitlement = new EntitlementService(database, traffic)
+    const relay = { disconnectAccount: jest.fn(), accountDeviceOnline: () => false, accountOnlineCount: () => 0, onlineConnectorCount: () => 0 }
+    const controller = new AdminController(database, relay as never, entitlement, traffic)
+    const heavy = database.upsertAccount({ subject: '91', displayName: 'Heavy', disabled: false })
+    const light = database.upsertAccount({ subject: '92', displayName: 'Light', disabled: false })
+    const member = database.upsertAccount({ subject: '93', displayName: 'Member', disabled: false })
+    database.upsertEntitlement({ accountId: member, product: 'kh_link', state: 'active', plan: 'KH Link', expiresAt: Date.now() + 86_400_000, updatedAt: Date.now() })
+    database.upsertAccountDevice({ accountId: heavy, id: 'pc', name: 'PC', type: 'windows' as never })
+    database.upsertAccountThread(heavy, { id: 'thread-1', connectorId: 'pc', nonce: 'n', ciphertext: '', archived: false, updatedAt: Date.now() })
+    database.upsertAccountItems(heavy, 'thread-1', [{ id: 'item-1', order: 1, nonce: 'n', ciphertext: 'x'.repeat(40), createdAt: Date.now() }])
+    traffic.add(heavy, 1500); traffic.add(light, 200); traffic.add(member, 5000)
+    traffic.addDevice(heavy, 'pc', 1000, 500)
+    database.addAccountTraffic([{ accountId: light, month: '2026-01', bytes: 77 }])
+    const data = controller.query({ module: 'traffic' }) as { month: string; limitBytes: number; total: number; usedBytes: number
+      accounts: Array<{ khQuantSubject: string; usedBytes: number; member: boolean; overLimit: boolean; historyBytes: number }>; months: Array<{ month: string; usedBytes: number }>; storage: { databaseBytes: number; historyBytes: number } }
+    expect(data).toMatchObject({ month: trafficMonth(), limitBytes: 1000, total: 3, usedBytes: 6700 })
+    expect(data.accounts.map(a => [a.khQuantSubject, a.usedBytes, a.member, a.overLimit])).toEqual([['93', 5000, true, false], ['91', 1500, false, true], ['92', 200, false, false]])
+    expect(data.accounts.find(a => a.khQuantSubject === '91')!.historyBytes).toBe(40)
+    expect((data.accounts.find(a => a.khQuantSubject === '91') as unknown as { devices: unknown[] }).devices).toEqual([expect.objectContaining({ deviceId: 'pc', name: 'PC', upBytes: 1000, downBytes: 500 })])
+    expect((data.accounts.find(a => a.khQuantSubject === '92') as unknown as { devices: unknown[] }).devices).toEqual([])
+    expect(data.storage.historyBytes).toBe(40); expect(data.storage.databaseBytes).toBeGreaterThan(0)
+    expect(data.months.map(m => m.month)).toEqual([trafficMonth(), '2026-01'])
+    const old = controller.query({ module: 'traffic', query: '2026-01' }) as { month: string; accounts: Array<{ usedBytes: number; overLimit: boolean }> }
+    expect(old.month).toBe('2026-01'); expect(old.accounts).toEqual([expect.objectContaining({ usedBytes: 77, overLimit: false })])
+    expect(JSON.stringify(data)).not.toMatch(/ciphertext|nonce|publicKey|keyEnvelope/)
+    traffic.onModuleDestroy()
   })
   it('counts only the published package download start, excluding HEAD, verification, later ranges and missing files', () => {
     const packages = [{ file: 'app.apk', version: '0.1.202', platform: 'android' }]

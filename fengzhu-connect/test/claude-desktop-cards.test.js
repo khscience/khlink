@@ -53,3 +53,42 @@ test('an unanswered offer becomes a two-choice question; an answered one is gone
   fs.appendFileSync(file, JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_2', name: START_SESSION_TOOL, input: { initiation: 'user_asked', title: '查天气' } }] } }) + '\n');
   assert.equal(pendingToolUse(file, START_SESSION_TOOL).kind, 'sessionStart');
 });
+
+test('"Work on a separate branch?" is a two-choice question answered on the desktop with the branch kind', async t => {
+  const { BRANCH_TOOL, BRANCH_NEW, BRANCH_STAY } = require('../src/backends/claude-desktop');
+  const { methods } = require('../src/backends/claude-desktop-sync');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-branch-')); t.after(() => fs.rmSync(root, { recursive: true }));
+  const file = path.join(root, 'session.jsonl');
+  const call = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_b', name: BRANCH_TOOL, input: { suggested: 'perf/offhours-polling' } }] } };
+  fs.writeFileSync(file, JSON.stringify(call) + '\n');
+  const pending = pendingToolUse(file, BRANCH_TOOL);
+  assert.equal(pending.kind, 'question');
+  assert.equal(pending.source, 'branch-offer');
+  assert.equal(pending.suggested, 'perf/offhours-polling');
+  assert.deepEqual(pending.questions[0].options.map(o => o.label), [BRANCH_NEW, BRANCH_STAY]);
+
+  const runs = [];
+  const threads = new Map([['claude-1', { desktopId: SESSION, waitingDetail: { ...pending, requestId: 'r1' } }]]);
+  const self = {
+    ...methods, claudeThreads: threads, log() {}, emit() {}, saveClaudeThreads() {}, claudeThreadStatus: () => 'idle',
+    setClaudeThreadFields(id, fields) { Object.assign(threads.get(id), fields); },
+    claudeDesktop: { focusedSessionId: () => SESSION }, syncClaudeDesktopSessions: async () => {},
+    execFileFn(cmd, args, options, done) {
+      const kind = args[args.indexOf('-Kind') + 1]; const choice = args[args.indexOf('-Choice') + 1];
+      runs.push({ kind, choice, expect: fs.readFileSync(args[args.indexOf('-ExpectFile') + 1], 'utf8') });
+      done(null, '{"ok":true}');
+    },
+  };
+  await assert.rejects(self.answerClaudeOnDesktopNow('claude-1', { requestId: 'r1', choices: ['允许'] }), /新建分支或留在当前分支/);
+  const result = await self.answerClaudeOnDesktopNow('claude-1', { requestId: 'r1', answers: [{ labels: [BRANCH_STAY] }] });
+  assert.equal(result.answered, true);
+  assert.deepEqual(runs, [{ kind: 'branch', choice: 'stay', expect: 'perf/offhours-polling' }]);
+  assert.equal(threads.get('claude-1').waitingDetail, null);
+});
+
+test('the desktop answer scripts carry no control characters (a written-out \b once broke two patterns)', () => {
+  for (const name of ['claude-desktop-answer.ps1', 'claude-desktop-native.ps1']) {
+    const text = fs.readFileSync(path.join(__dirname, '..', 'scripts', name), 'utf8');
+    assert.equal(/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text), false, name);
+  }
+});

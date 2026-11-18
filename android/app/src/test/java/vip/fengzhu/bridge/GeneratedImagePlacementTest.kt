@@ -20,6 +20,30 @@ class GeneratedImagePlacementTest {
     }
 
     @Test
+    fun fetchedMultiImageToolResultKeepsEveryImageWithTheAnswer() {
+        val images = (1..4).map { HistoryImage("data:image/png;base64,image$it") }
+        val placeholder = HistoryItem("g", 2, "imageGeneration", "", "completed", false, light = true)
+        val answer = HistoryItem("a", 3, "agentMessage", "四张图已生成", "completed", false)
+        val result = hydrateLightDetailsAndPlaceImages(listOf(placeholder, answer), mapOf("g" to placeholder.copy(light = false, images = images)))
+        assertEquals(images, result.single().generatedImages)
+    }
+
+    @Test
+    fun aNewRunningTurnDoesNotHideImagesFromAnEarlierCompletedAnswer() {
+        val history = listOf(
+            HistoryItem("u1", 1, "userMessage", "画图", null, false),
+            HistoryItem("a1", 2, "agentMessage", "画好了", "completed", false, generatedImages = listOf(generated)),
+            HistoryItem("u2", 3, "userMessage", "继续", null, false),
+            HistoryItem("a2", 4, "agentMessage", "正在处理", "running", false),
+        )
+        val previous = historyIdsBeforeLatestUserMessage(history)
+        assertTrue(showGeneratedImagesForItem("a1", previous, taskExecuting = true))
+        assertTrue(!showGeneratedImagesForItem("a2", previous, taskExecuting = true))
+        assertTrue(showGeneratedImagesForItem("a2", previous, taskExecuting = false))
+        assertTrue(!showGeneratedImagesForItem("a1", historyIdsBeforeLatestUserMessage(history.drop(3)), taskExecuting = true))
+    }
+
+    @Test
     fun movesGeneratedImagesToTheEndOfTheSameAnswer() {
         val result = deferGeneratedImagesToAnswerEnd(listOf(
             HistoryItem("u", 1, "userMessage", "画一张图", null, false),

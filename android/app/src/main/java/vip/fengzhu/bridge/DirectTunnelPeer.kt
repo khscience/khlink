@@ -50,7 +50,7 @@ internal class DirectTunnelPeer(
     @Volatile private var socket: WebSocket? = null
     @Volatile private var closed = false
     @Volatile private var open = false
-    private data class Assembly(val total: Int, val at: Long, var next: Int = 0, val bytes: ByteArrayOutputStream = ByteArrayOutputStream())
+    private data class Assembly(val total: Int, var at: Long, var next: Int = 0, val bytes: ByteArrayOutputStream = ByteArrayOutputStream())
     private val assemblies = mutableMapOf<String, Assembly>()
 
     private val startedAt = System.currentTimeMillis()
@@ -98,7 +98,7 @@ internal class DirectTunnelPeer(
         require(entry.total == total && entry.next == index) { "直连分片顺序错误" }
         val bytes = Base64.decode(data, Base64.NO_WRAP)
         require(bytes.size <= 8192 && entry.bytes.size() + bytes.size <= 8 * 1024 * 1024) { "直连消息过大" }
-        entry.bytes.write(bytes); entry.next++
+        entry.bytes.write(bytes); entry.next++; entry.at = System.currentTimeMillis()
         if (entry.next == total) { assemblies.remove(id); receive(entry.bytes.toString("UTF-8")) }
     }
 

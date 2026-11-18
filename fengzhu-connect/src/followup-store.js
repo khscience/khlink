@@ -77,15 +77,14 @@ class FollowupStore {
     this.items = this.items.filter((candidate) => candidate !== item); this.save(); return item;
   }
 
-  matchStarted(threadId, text, startedAt = Date.now()) {
+  matchStarted(threadId, text, startedAt = Date.now(), marker = requestMarkerId(text)) {
     const normalized = normalizeText(stripRequestMarker(text));
-    const marker = requestMarkerId(text);
     if (marker) {
-      const exact = this.items.find((candidate) => candidate.threadId === threadId && candidate.requestId === marker &&
+      const exact = this.items.find((candidate) => !candidate.nativeAsync && candidate.threadId === threadId && candidate.requestId === marker &&
         ['desktop_queued', 'dispatching', 'pending', 'uncertain', 'started'].includes(candidate.state));
-      if (exact) return this.remove(exact.id);
+      return exact ? this.remove(exact.id) : null;
     }
-    const item = this.items.find((candidate) => candidate.threadId === threadId &&
+    const item = this.items.find((candidate) => !candidate.nativeAsync && candidate.threadId === threadId &&
       ['desktop_queued', 'dispatching', 'pending', 'uncertain', 'started'].includes(candidate.state) && candidate.createdAt <= startedAt + 5000 &&
       startedAt - candidate.createdAt >= -5000 && startedAt - candidate.createdAt < 7 * 24 * 60 * 60_000 && matchesStartedText(candidate, normalized));
     return item ? this.remove(item.id) : null;

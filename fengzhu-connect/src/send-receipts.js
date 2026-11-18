@@ -35,6 +35,27 @@ class SendReceipts {
 
   get(id) { return this.rows.get(id); }
 
+  // A phone can keep an unacknowledged command across a long offline period.
+  // Once its detailed receipt ages out, keep only its fingerprint and outcome.
+  // Sharding keeps each atomic write small and avoids scanning all past sends.
+  archivedCodex(id, settled = null) {
+    const key = crypto.createHash('sha256').update(String(id)).digest('hex');
+    const file = this.file && `${this.file}.codex-${key.slice(0, 2)}`;
+    let shard;
+    if (file) {
+      try { shard = JSON.parse(unprotect(fs.readFileSync(file, 'utf8'))); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; shard = {}; }
+      if (!shard || typeof shard !== 'object' || Array.isArray(shard)) throw new Error('发送回执索引损坏');
+    } else {
+      shard = this.memoryCodexArchive ||= {};
+    }
+    if (settled) {
+      shard[key] = { fingerprint: settled.fingerprint, state: settled.state };
+      if (file) writeFileAtomic(file, protect(JSON.stringify(shard)), { mode: 0o600 });
+    }
+    return shard[key];
+  }
+
   begin(id, backend, args) {
     const now = Date.now();
     const row = { id, requestId: id, threadId: args.threadId, backend, text: String(args.text || ''),
@@ -42,8 +63,13 @@ class SendReceipts {
       origin: 'mobile', blocking: false, historyAfterOrder: args.historyAfterOrder,
       fingerprint: this.fingerprint(backend, args) };
     // Keep unresolved sends indefinitely; bound the resolved request cache.
-    const resolved = [...this.rows.values()].filter((item) => !['uncertain', 'dispatching', 'desktop_queued', 'failed'].includes(item.state)).sort((a, b) => b.createdAt - a.createdAt);
-    for (const [index, item] of resolved.entries()) if (now - item.createdAt > 7 * 86400_000 || index >= 500) this.rows.delete(item.id);
+    const resolved = [...this.rows.values()].filter((item) => item.backend === 'codex'
+      ? ['started', 'steered', 'cancelled'].includes(item.state)
+      : !['uncertain', 'dispatching', 'desktop_queued', 'failed'].includes(item.state)).sort((a, b) => b.createdAt - a.createdAt);
+    for (const [index, item] of resolved.entries()) if (now - item.createdAt > 7 * 86400_000 || index >= 500) {
+      if (item.backend === 'codex') this.archivedCodex(item.id, item);
+      this.rows.delete(item.id);
+    }
     this.rows.set(id, row);
     try { this.save(); } catch (error) { this.rows.delete(id); throw error; }
     return row;
@@ -59,7 +85,8 @@ class SendReceipts {
   event(kind, threadId, value) {
     const id = value?.id || value?.requestId; const row = this.rows.get(id);
     if (!row || row.threadId !== threadId) return;
-    const state = ({ 'followup.started': 'started', 'followup.cancelled': 'cancelled', 'followup.failed': value.needsConfirmation ? 'uncertain' : 'failed' })[kind]
+    if (row.backend === 'codex' && ['started', 'steered', 'cancelled'].includes(row.state)) return;
+    const state = (row.backend === 'codex' && kind === 'steer.accepted' ? 'started' : null) || ({ 'followup.started': 'started', 'followup.cancelled': 'cancelled', 'followup.failed': value.needsConfirmation ? 'uncertain' : 'failed' })[kind]
       || (kind === 'followup.queued' ? value.state : null);
     if (!state || state === 'dispatching' || row.state === state) return;
     this.update(id, { state, reason: value.reason || null, startedAt: value.startedAt || row.startedAt || null });

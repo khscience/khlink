@@ -80,6 +80,26 @@ test('transcript → items: user/assistant/thinking/tools, internal turns hidden
   assert.equal(next.lastStopReason, 'end_turn');
 });
 
+test('Claude compact summaries use their explicit flag and do not change turn or queue state', () => {
+  const content = 'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n<system-reminder><tools-used-before-summary>Agent</tools-used-before-summary></system-reminder>';
+  const row = (uuid, extra = {}) => JSON.stringify({ type: 'user', uuid, timestamp: '2026-11-09T10:31:00Z', message: { role: 'user', content }, ...extra });
+  const queueOps = [{ op: 'enqueue', content: '请继续', at: 100 }];
+  const state = { lastEvent: 'end_turn', lastEventAt: 100, lastTerminalStatus: null, queueOps: [...queueOps] };
+  const hidden = d.transcriptItems([row('summary', { isCompactSummary: true, isVisibleInTranscriptOnly: true })], 12, state);
+  assert.deepEqual(hidden.map(({ id, order, type, text }) => ({ id, order, type, text })),
+    [{ id: 'summary:0', order: 12 * 16, type: 'hidden', text: '' }]);
+  assert.equal(state.lastEvent, 'end_turn');
+  assert.equal(state.lastEventAt, 100);
+  assert.deepEqual(state.queueOps, queueOps);
+
+  // An actual user can quote the same words: without the explicit Claude
+  // flag, source ingestion must not drop it or hide an assistant's reply.
+  const ordinary = d.transcriptItems([row('user'), JSON.stringify({ type: 'assistant', uuid: 'assistant', isCompactSummary: true,
+    message: { content: [{ type: 'text', text: content }] } })]);
+  assert.deepEqual(ordinary.map(item => item.type), ['userMessage', 'agentMessage']);
+  assert.equal(ordinary[0].text, content);
+});
+
 test('registerSession writes a desktop session file for a phone-created session', () => {
   const { store, account } = desktopFixture();
   const id = store.registerSession({ cliSessionId: '44444444-4444-4444-8444-444444444444', cwd: 'D:\\work', title: '手机任务', model: 'haiku', effort: 'low', approveMode: 'acceptEdits' });
@@ -413,6 +433,7 @@ test('phone model / effort for a desktop-run session are switched there with sla
   connector.scheduleClaudeTranscriptSync = () => {};
   await connector.deliverClaudeToDesktop(id, { text: '继续' });
   assert.deepEqual(sent.map((item) => item.text), ['/effort auto', '继续']);
+  assert.deepEqual(connector.claudeDesktopSettingCommands({ model: 'claude-fable-5-2' }), ['/model claude-fable-5-2']);
   assert.throws(() => connector.claudeDesktopSettingCommands({ model: 'sonnet\n/clear' }), /模型名称无效/);
   assert.throws(() => connector.claudeDesktopSettingCommands({ effort: 'turbo' }), /思考强度无效/);
 });
@@ -1866,4 +1887,34 @@ test('"allow and switch to Auto" on a dialog without Auto (a scheduled task): al
   assert.equal(done.modeSwitch, 'auto');
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(modes, [['t', 'auto']]);
+});
+
+test('a transcript is read in chunks, and a first read of a huge one starts at its tail with the same item ids', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'khlink-chunks-'));
+  const file = path.join(dir, 'session.jsonl');
+  const rows = [];
+  for (let i = 0; i < 40; i++) {
+    rows.push(JSON.stringify({ type: 'user', uuid: `u${i}`, timestamp: '2026-11-15T01:00:00Z', message: { role: 'user', content: `第 ${i} 个问题` } }));
+    rows.push(JSON.stringify({ type: 'assistant', uuid: `a${i}`, timestamp: '2026-11-15T01:00:01Z', message: { stop_reason: 'end_turn', content: [{ type: 'text', text: `回答 ${i}`.padEnd(i === 7 ? 600 : 20, '。') }] } }));
+  }
+  fs.writeFileSync(file, rows.join('\n') + '\n' + '{"type":"assist');
+  const whole = d.readTranscript(file, 0, 0, {}, { firstTail: 0 });
+  // Small chunks, one line (row 15, 600 characters) longer than a chunk: the same items.
+  const chunked = d.readTranscript(file, 0, 0, {}, { firstTail: 0, chunk: 300 });
+  assert.deepEqual(chunked.items, whole.items);
+  assert.equal(chunked.offset, whole.offset);
+  assert.equal(chunked.lineCount, 80);
+  assert.equal(fs.readFileSync(file).length - whole.offset, '{"type":"assist'.length, 'the line still being written is left for later');
+  // A first read of a "huge" file: only its tail, with the ids a full read gives.
+  const tail = d.readTranscript(file, 0, 0, {}, { firstTail: 2000 });
+  assert.equal(tail.skippedHead, true);
+  assert.ok(tail.items.length > 0 && tail.items.length < whole.items.length);
+  assert.deepEqual(tail.items, whole.items.slice(-tail.items.length));
+  assert.equal(tail.offset, whole.offset);
+  assert.equal(tail.lineCount, 80);
+  // Reading on from there is ordinary.
+  fs.appendFileSync(file, 'ant","uuid":"a40","timestamp":"2026-11-15T01:00:02Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"最后"}]}}\n');
+  const next = d.readTranscript(file, tail.offset, tail.lineCount, tail, { chunk: 300 });
+  assert.deepEqual(next.items.map((item) => item.value?.text || item.text).filter(Boolean).slice(-1), ['最后']);
+  assert.equal(next.lineCount, 81);
 });

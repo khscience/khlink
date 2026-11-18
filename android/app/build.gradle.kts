@@ -21,8 +21,8 @@ android {
         applicationId = "vip.fengzhu.bridge"
         minSdk = 24
         targetSdk = 36
-        versionCode = 334
-        versionName = "0.1.333"
+        versionCode = 365
+        versionName = "0.1.364"
         // The production phone is arm64-v8a.  WebRTC ships four native
         // architectures in its universal AAR; keeping only the device ABI
         // avoids putting unused x86/32-bit libraries in the release APK.
@@ -74,6 +74,8 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.05.01")
     implementation(composeBom)
     androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.exifinterface:exifinterface:1.4.1")
@@ -90,6 +92,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.37.0")
+    implementation("io.coil-kt:coil-compose:2.5.0")
+    implementation("io.coil-kt:coil-gif:2.5.0")
+    implementation("io.coil-kt:coil-svg:2.5.0")
     implementation("com.goterl:lazysodium-android:5.2.0@aar")
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")

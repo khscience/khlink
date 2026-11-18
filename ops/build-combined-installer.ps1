@@ -30,7 +30,11 @@ $ConnectorTgz = (Resolve-Path $ConnectorTgz).Path
 Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 Write-Host "Staging connector from $ConnectorTgz"
-tar -xzf $ConnectorTgz -C $stage --strip-components=1
+# Windows' own tar (bsdtar): started from Git Bash, a plain "tar" can be Git's
+# GNU tar, which reads "I:\..." as a remote host and stages nothing.
+$tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+if (-not (Test-Path $tar)) { $tar = 'tar' }
+& $tar -xzf $ConnectorTgz -C $stage --strip-components=1
 if (-not (Test-Path (Join-Path $stage 'src\cli.js'))) { throw 'Connector tgz is incomplete (no src/cli.js).' }
 
 if (-not $SkipNpmInstall) {

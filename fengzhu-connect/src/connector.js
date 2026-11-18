@@ -38,6 +38,7 @@ const { ProcessLock } = require('./process-lock');
 const files = require('./files');
 const { takeSyncTally } = require('./sync-probe');
 const { PcLoad } = require('./pc-load');
+const { ScreenMonitor } = require('./screen-monitor');
 const { LatestFileWriter } = require('./latest-file-writer');
 const { SendReceipts, UNCERTAIN: SEND_RECEIPT_UNCERTAIN } = require('./send-receipts');
 const { clip, extractInlineImages, hasGeneratedImageMarker, stripLocalImageMarkup, stripProposedPlanMarkup, isInternalContextText, normalizeThread, normalizeItems, readDesktopPinState, applyDesktopPin } = require('./history');
@@ -45,8 +46,10 @@ const { sanitizeUploadReferences, publicAttachments } = require('./attachment-pr
 const { LightDetailTransfers, LEGACY_DETAIL_JSON_BYTES } = require('./light-detail-transfer');
 const { readConversationActivityAt } = require('./codex-activity');
 const { withRequestMarker, requestMarkerId, stripRequestMarker } = require('./request-marker');
-const { ConversationUsageReader } = require('./conversation-usage');
-const { CodexQuestionTracker, questionEvent, isCodexQuestionReply } = require('./codex-questions');
+const { ConversationUsageReader, validPeriodStarts } = require('./conversation-usage');
+const { readDshDistribution } = require('./usage-distribution');
+const { CodexQuestionTracker, questionEvent, isCodexQuestionReply, normalizeDesktopQuestionReply } = require('./codex-questions');
+const { parseAsyncAnswers, prepareAsyncAnswers, nativeAsyncAnswerAfter } = require('./codex-desktop-async-answer');
 const { transcriptPath: usageTranscriptPath } = require('./backends/claude-desktop');
 
 const STALE_ACTIVE_ROLLOUT_MS = 24 * 60 * 60_000;
@@ -340,10 +343,10 @@ class Connector {
       const namespace = crypto.createHash('sha256').update(this.config.accountKey).digest('hex').slice(0, 16);
       this.directHistory = new DirectHistory(path.join(path.dirname(this.config.configFile), 'direct-history', namespace), this.config);
       this.api.localHistory = this.directHistory;
-      if (this.directHistory.fresh) { this.threadDigests.clear(); this.threadItemDigests.clear(); this.historyBackfills.clear(); }
+      if (this.directHistory.fresh) { this.threadDigests.clear(); this.threadItemDigests.clear(); this.historyBackfills.clear(); this.historyUploadDigests()?.forget(); }
       // A damaged conversation file was dropped: forget what was already
       // mirrored so the next sync writes every conversation again.
-      this.directHistory.onDamage = () => { this.threadItemDigests.clear(); this.historyBackfills.clear(); this.syncHistory().catch((e) => this.log(e)); };
+      this.directHistory.onDamage = () => { this.threadItemDigests.clear(); this.historyBackfills.clear(); this.historyUploadDigests()?.forget(); this.syncHistory().catch((e) => this.log(e)); };
       const { DirectHub } = require('./direct-hub');
       this.direct = new DirectHub(this); await this.direct.start();
     }
@@ -361,6 +364,19 @@ class Connector {
     this.startStallWatch();
     // CPU / GPU / memory for the phone's load rings (cheap; see pc-load.js).
     if (!this.pcLoad && !process.env.NODE_TEST_CONTEXT) { this.pcLoad = new PcLoad({ log: (e) => this.log(e) }); this.pcLoad.start(); }
+    if (!this.screenMonitor && !process.env.NODE_TEST_CONTEXT) {
+      this.screenMonitor = new ScreenMonitor(path.dirname(this.config.configFile), {
+        onChange: () => {
+          if (this.stopping) return;
+          this.presenceFullDue = true;
+          if (this.isConnected()) {
+            try { this.publishPresence({ full: true }); }
+            catch (error) { this.presenceFullDue = true; this.log(error); }
+          }
+        },
+      });
+      this.screenMonitor.start();
+    }
     this.watchCodexInstall();
     this.startCodexUsageWatch();
     this.startRealtimeSync();
@@ -832,10 +848,16 @@ class Connector {
         this.saveSequence(frame.sequence);
         return;
       }
-      this.inFlightCommands.add(String(requestId));
+      const inFlight = Symbol(requestId);
+      this.inFlightCommands.add(inFlight);
       try {
         assertCommandThread(frame.threadId, payload.args?.threadId);
-        const result = await this.command(payload, frame.sourceDeviceId);
+        const args = payload.args;
+        const codexSend = args?.threadId && ['turn.start', 'turn.steer', 'followup.enqueue'].includes(payload.action)
+          && this.threadBackendId(args.threadId) === 'codex';
+        const result = codexSend
+          ? await this.receiveCodexSend({ ...payload, requestId }, frame.sourceDeviceId)
+          : await this.command(payload, frame.sourceDeviceId);
         this.emit(resultKind, frame.threadId, { requestId, ok: true, result }, frame.sourceDeviceId);
       }
       catch (e) {
@@ -846,9 +868,54 @@ class Connector {
         this.log(`command ${payload.action} failed${failedThread ? ` for ${failedThread} (${failedBackend})` : ''}: ${e.message}`);
         this.emit(resultKind, frame.threadId, { requestId, ok: false, error: phoneErrorText(e.message, e.code) }, frame.sourceDeviceId);
         if (frame.kind === 'command.control' && frame.threadId) this.emit('control.release', frame.threadId, { reason: 'command_failed' });
-      } finally { this.inFlightCommands.delete(String(requestId)); }
+      } finally { this.inFlightCommands.delete(inFlight); }
     } else if (frame.kind === 'approval.resolve') this.resolveApproval(payload);
     if (!options.direct) this.saveSequence(frame.sequence);
+  }
+
+  // Claim the phone request before the first asynchronous probe. The protected
+  // receipt outlives its transient queue row and a connector/phone reconnect.
+  async receiveCodexSend(payload, sourceDeviceId) {
+    const { requestId, args } = payload;
+    const receipts = this.sendReceipts ||= new SendReceipts();
+    const previous = receipts.get(requestId);
+    if (previous) {
+      if (previous.fingerprint !== receipts.fingerprint('codex', args)) throw new Error('请求标识与之前发送的消息不一致');
+      if (!['started', 'steered', 'cancelled'].includes(previous.state)) {
+        const queued = this.followups?.get?.(requestId);
+        if (queued) return { requestId, duplicate: true, item: publicItem(queued),
+          accepted: ['started', 'steered'].includes(queued.state),
+          queued: ['pending', 'desktop_queued'].includes(queued.state),
+          uncertain: ['dispatching', 'uncertain'].includes(queued.state), failed: queued.state === 'failed' };
+      }
+      return { ...receipts.result(previous), requestId, duplicate: true,
+        uncertain: ['uncertain', 'dispatching', 'pending'].includes(previous.state) };
+    }
+    const settled = receipts.archivedCodex(requestId);
+    if (settled) {
+      if (settled.fingerprint !== receipts.fingerprint('codex', args)) throw new Error('请求标识与之前发送的消息不一致');
+      return { requestId, duplicate: true, accepted: ['started', 'steered'].includes(settled.state),
+        cancelled: settled.state === 'cancelled' };
+    }
+    const row = receipts.begin(requestId, 'codex', args);
+    try {
+      const result = await this.command(payload, sourceDeviceId);
+      if (!['started', 'steered', 'cancelled'].includes(row.state)) {
+        let state = 'started';
+        if (result?.cancelled) state = 'cancelled';
+        else if (result?.failed) state = 'failed';
+        else if (result?.uncertain) state = 'uncertain';
+        else if (result?.queued || result?.deferred) state = 'desktop_queued';
+        else if (result?.accepted === false) state = 'uncertain';
+        receipts.update(requestId, { state });
+      }
+      return result;
+    } catch (error) {
+      if (!['started', 'steered', 'cancelled'].includes(row.state)) receipts.update(requestId, {
+        state: error.delivery === 'not_sent' ? 'failed' : 'uncertain', reason: phoneErrorText(error.message, error.code),
+      });
+      throw error;
+    }
   }
 
   async replayEvents() {
@@ -869,7 +936,7 @@ class Connector {
     // Local history details belong to the connector for every backend. These
     // reads are independent of an agent's running turn and writer lock.
     if (payload.action === 'history.details' || payload.action === 'file.historyDetailPart') return this.executeCommand(payload);
-    if (payload.action === 'thread.usage.read') return this.readConversationUsage(threadId, sourceDeviceId, payload.args?.historyFrom);
+    if (payload.action === 'thread.usage.read') return this.readConversationUsage(threadId, sourceDeviceId, payload.args?.historyFrom, payload.args?.periods);
     const hasAttachments = Array.isArray(payload.args?.attachments) && payload.args.attachments.length > 0;
     const queueDispatch = Boolean(payload.args?._queueDispatch);
     // Attachments use the same single-writer decision as text.  They are
@@ -1293,6 +1360,10 @@ class Connector {
   }
 
   async probeDesktopThread(threadId, title) {
+    // The desktop adapter is a Windows program. Elsewhere there is no Codex
+    // Desktop to hand to: report it absent, so the connector's own app-server
+    // takes the message instead of retrying a probe that cannot run.
+    if (process.platform !== 'win32') throw Object.assign(new Error('Codex Desktop was not found'), { code: 'desktop_not_ready' });
     try { return await this.desktopAdapter.probe(threadId, title); }
     catch (error) {
       // The native adapter reports these positive presence observations as
@@ -1373,7 +1444,7 @@ class Connector {
   async executeQueuedBackgroundTurn(item) {
     const request = { action: item.steerRequested ? 'turn.steer' : 'turn.start', args: {
       _queueDispatch: true,
-      requestId: item.requestId, threadId: item.threadId, title: item.title || null, text: item.displayText || item.text,
+      requestId: item.requestId, threadId: item.threadId, title: item.title || null, text: item.displayText ?? item.text,
       attachments: item.attachments || [], cwd: item.cwd || undefined, model: item.model || undefined,
       effort: item.effort || undefined, serviceTier: item.serviceTier || undefined,
       permissionMode: item.permissionMode || undefined,
@@ -1410,11 +1481,12 @@ class Connector {
     // identifies a receipt; Codex 0.160.1 does NOT deduplicate queue/add by
     // that id (confirmed with an isolated three-call test on 2026-10-08).
     // Once a write may have happened, only positive receipts allow recovery.
+    const wasPending = Boolean(this.followups?.get?.(item.id));
     let result;
     try {
       result = await this.codex.request('thread/queue/add', {
         threadId: item.threadId,
-        input: codexInput(item.displayText || item.text, item.attachments || [], item.requestId),
+        input: codexInput(item.displayText ?? item.text, item.attachments || [], item.requestId),
         clientUserMessageId: item.requestId,
       }, 30_000);
     } catch (error) {
@@ -1423,6 +1495,11 @@ class Connector {
     }
     if (!result?.queuedSubmission?.id || (result.queuedSubmission.clientUserMessageId && result.queuedSubmission.clientUserMessageId !== item.requestId)) {
       const error = new Error('电脑队列未返回这条消息的有效回执'); error.delivery = 'uncertain'; throw error;
+    }
+    if (wasPending && !this.followups.get(item.id)) {
+      // A matching history receipt arrived while this queue write was in flight.
+      await this.codex.request('thread/queue/delete', { threadId: item.threadId,
+        queuedSubmissionId: result.queuedSubmission.id }, 15_000);
     }
     return result;
   }
@@ -1457,6 +1534,7 @@ class Connector {
     // A phone "立即发送" can claim a still-local queued item while the
     // read-only host probe is in flight. Do not subsequently dispatch it again.
     const current = this.followups.get?.(item.id);
+    if (this.followups.get && !current) return null;
     if (current?.state && current.state !== 'pending') return current;
     const state = this.threadState?.get(item.threadId) || {};
     const pendingSettings = item.steerRequested ? null : state.pendingDesktopSettings;
@@ -1529,10 +1607,19 @@ class Connector {
           desktopOwnsThread = false;
         }
       }
+      if (desktopOwnsThread && item.steerRequested && isCodexQuestionReply(item.displayText || item.text)) {
+        // A Desktop-owned async question belongs to its native question panel.
+        // Queueing its XML envelope or typing it into the rich-text composer
+        // can turn it into an escaped ordinary message instead of an answer.
+        enterPhase('native_async');
+        await this.withCodexDesktopWindowLock(() => this.answerNativeAsyncFollowup(item, item.sourceDeviceId, { retainReceipt: true }));
+        return this.followups.get(item.id) || null;
+      }
       if (desktopOwnsThread && this.codex?.request) {
         // Text and images both use the protocol queue and durable receipts.
         // Switching a huge Desktop conversation through UI Automation can
         // take longer than the dispatch timeout and leave delivery unknown.
+        if (this.followups.get && !this.followups.get(item.id)) return null;
         enterPhase('codex_queue');
         const queued = await this.enqueueCodexThreadQueue(item);
         // queue/add confirms it is waiting, NOT that Desktop has consumed it.
@@ -1552,6 +1639,7 @@ class Connector {
         return accepted;
       }
       if (!desktopOwnsThread && (item.mode === 'background' || item.attachments?.length || item.mode === 'queue')) {
+        if (this.followups.get && !this.followups.get(item.id)) return null;
         enterPhase('background');
         await this.executeQueuedBackgroundTurn(item);
       } else {
@@ -1573,6 +1661,10 @@ class Connector {
     } catch (error) {
       if (isDesktopWriterBusyError(error)) {
         this.markDesktopThread(item.threadId, error.message || 'Codex Desktop 持有当前任务写入权');
+        if (item.steerRequested && isCodexQuestionReply(item.displayText || item.text)) {
+          await this.withCodexDesktopWindowLock(() => this.answerNativeAsyncFollowup(item, item.sourceDeviceId, { retainReceipt: true }));
+          return this.followups.get(item.id) || null;
+        }
         // A targeted UI probe can report “another task” even while Desktop's
         // app-server still retains this thread in memory. In that case the
         // background turn is rejected by the single-writer guard, but the
@@ -1949,6 +2041,17 @@ class Connector {
       return { accepted: false, unavailable: true, reason: '这条消息尚未进入电脑队列' };
     }
     if (item.queueTransport === 'codex' && this.codexDesktopSteer && !(item.attachments || []).some(isImageAttachment)) {
+      // When the user explicitly chose Queue, keep the existing protocol row
+      // intact while Desktop is still busy. Its composer can be configured
+      // to offer only Steer; transferring into it would either send early or
+      // leave a draft. The retry sweep will hand off once the turn is idle.
+      if (queueOnly && (this.desktopTurnIsActive(item.threadId) || isDesktopTaskBusy(this.desktopStatuses?.get(item.threadId)))) {
+        const waiting = this.followups.update(item.id, { windowQueueRequested: true, steerRetryAt: Date.now() + 2000,
+          reason: '等当前这一轮结束后发送', blocking: true });
+        if (!waiting) return { accepted: false, missing: true };
+        this.emit('followup.queued', item.threadId, publicItem(waiting), sourceDeviceId || item.sourceDeviceId);
+        return { accepted: false, deferred: true, item: publicItem(waiting) };
+      }
       // One visible Desktop window serves all conversations: do not let two
       // concurrent sends switch its selected task or edit its composer at once.
       return this.withCodexDesktopWindowLock(async () => {
@@ -2001,6 +2104,56 @@ class Connector {
     finally { if (this.codexDesktopWindowChain === operation) this.codexDesktopWindowChain = null; }
   }
 
+  // Caller holds the shared Desktop-window lock. Never use the composer as a
+  // fallback, and never retry after the native control may have been invoked.
+  async answerNativeAsyncFollowup(item, sourceDeviceId, { retainReceipt = false } = {}) {
+    const deviceId = sourceDeviceId || item.sourceDeviceId;
+    const replies = parseAsyncAnswers(item.displayText || item.text);
+    const info = replies && this.codexQuestionThreadInfo(item.threadId);
+    const evidence = info && readRolloutEvidence(info.file, 16 * 1024 * 1024);
+    const prepared = prepareAsyncAnswers(replies, evidence);
+    let offset = null;
+    try { if (info) offset = fs.statSync(info.file).size; } catch { /* fail closed */ }
+    const fail = (reason, uncertain = false) => {
+      const updated = this.followups.update(item.id, { state: uncertain ? 'uncertain' : 'failed', nativeAsync: true,
+        codexQueueId: null, queueTransport: null, nextRetryAt: null, steerRetryAt: null, reason, blocking: true });
+      if (updated) this.emit('followup.failed', item.threadId, { ...publicItem(updated), needsConfirmation: uncertain }, deviceId);
+      return { accepted: false, ...(uncertain ? { uncertain: true } : { failed: true }), ...(updated ? { item: publicItem(updated) } : {}) };
+    };
+    if (!this.codexDesktopAnswer || !prepared || !Number.isSafeInteger(offset)) {
+      return fail('电脑上的选项已变化或暂时无法安全识别，请检查电脑后重新选择');
+    }
+    const claimed = this.followups.update(item.id, { state: 'dispatching', deliveryPhase: 'native_async_answer', nativeAsync: true,
+      rolloutOffset: offset, codexQueueId: null, queueTransport: null, nextRetryAt: null });
+    if (!claimed) return { accepted: false, missing: true };
+    const nativeStartedAt = Date.now();
+    let result;
+    try { result = await this.codexDesktopAnswer.answer({ threadId: item.threadId, title: info.title, ...prepared, asynchronous: true }); }
+    catch { result = { code: 'script_failed', delivery: 'uncertain' }; }
+    let observed = nativeAsyncAnswerAfter(info.file, offset, replies);
+    if (!observed && result.delivery !== 'not_sent') {
+      for (let i = 0; i < (this.nativeAsyncReceiptChecks ?? 20) && !observed; i++) {
+        await new Promise(resolve => setTimeout(resolve, 250));
+        observed = nativeAsyncAnswerAfter(info.file, offset, replies);
+      }
+    }
+    this.log?.(`Codex native async answer ${String(item.threadId).slice(0, 8)} result=${result.code || 'error'} receipt=${observed ? 'matched' : 'missing'} elapsed=${Date.now() - nativeStartedAt}ms`);
+    if (result.code === 'question_unavailable' && /^title=(?:True|False) visibleQuestions=\d+ allQuestions=\d+ visibleRadios=\d+ allRadios=\d+$/.test(result.message || '')) {
+      this.log?.(`Codex native async controls ${result.message}`);
+    }
+    if (!observed) {
+      if (result.delivery === 'not_sent') return fail(result.code === 'draft_present'
+        ? '电脑上的选项已有未发送的回答，请先检查电脑'
+        : '电脑上的选项暂时无法安全识别，请检查电脑后重新选择');
+      return fail('回答结果尚未确认，请检查电脑；系统不会自动重发', true);
+    }
+    if (retainReceipt) this.followups.update(item.id, { state: 'started', mode: 'steer', steerRequested: false,
+      startedAt: Date.now(), reason: null, blocking: false });
+    else this.followups.remove(item.id);
+    this.emit('steer.accepted', item.threadId, { requestId: item.requestId, queuedItemId: item.id }, deviceId);
+    return { accepted: true, requestId: item.requestId, result: { code: 'native_answer_confirmed' } };
+  }
+
   /**
    * A message in the Codex protocol queue of a task Codex Desktop runs. Its
    * window does not show that queue (26.1027), so the message leaves it and
@@ -2012,6 +2165,18 @@ class Connector {
     const deviceId = sourceDeviceId || item.sourceDeviceId;
     const title = item.title || this.desktopTitles?.get(item.threadId) || null;
     if (!title) return this.deferCodexSteer(item, deviceId, '电脑端还不知道这个任务的标题，消息仍在等待', { queueOnly });
+    const canSubmit = () => {
+      const file = this.rolloutFilesByThread?.get(item.threadId);
+      if (file && this.followups.get(item.id)) this.reconcileStartedFollowups(item.threadId, file, {
+        exactRequestId: item.requestId, maxTailBytes: 16 * 1024 * 1024,
+      });
+      const current = this.followups.get(item.id);
+      return current?.state === 'dispatching' && current.deliveryPhase === 'queue_transfer';
+    };
+    const alreadyHandled = () => {
+      const cancelled = this.sendReceipts?.get(item.requestId)?.state === 'cancelled';
+      return { accepted: !cancelled, cancelled, duplicate: true, requestId: item.requestId };
+    };
     let queueId = item.codexQueueId;
     try {
       if (!queueId) queueId = await this.findCodexQueueId(item);
@@ -2019,22 +2184,29 @@ class Connector {
       if (!queueId) return { accepted: false, unavailable: true, reason: '这条消息已开始执行' };
       // Persist before removing the receipt: a crash after this point must
       // not silently retry a transfer whose destination may have accepted it.
-      this.followups.update(item.id, { state: 'dispatching', deliveryPhase: 'queue_transfer' });
+      this.followups.update(item.id, { state: 'dispatching', deliveryPhase: 'queue_transfer',
+        ...(!queueOnly && isCodexQuestionReply(item.displayText || item.text) ? { nativeAsync: true } : {}) });
       await this.codex.request('thread/queue/delete', { threadId: item.threadId, queuedSubmissionId: queueId }, 15_000);
     } catch (error) {
       const uncertain = this.followups.update(item.id, { state: 'uncertain', reason: '电脑队列回执未确认，正在核对；不会自动重发', nextRetryAt: null });
       if (uncertain) this.emit('followup.failed', item.threadId, { ...publicItem(uncertain), needsConfirmation: true }, deviceId);
       return { accepted: false, uncertain: true, ...(uncertain ? { item: publicItem(uncertain) } : {}) };
     }
-    const text = withRequestMarker(withAttachmentContext(item.displayText || item.text, normalizeAttachments(item.attachments).filter((a) => !isImageAttachment(a))), item.requestId);
+    if (!canSubmit()) return alreadyHandled();
+    if (!queueOnly && isCodexQuestionReply(item.displayText || item.text)) {
+      return this.answerNativeAsyncFollowup(item, deviceId, { retainReceipt });
+    }
+    const text = withRequestMarker(withAttachmentContext(item.displayText ?? item.text, normalizeAttachments(item.attachments).filter((a) => !isImageAttachment(a))), item.requestId);
     let result;
-    try { result = await this.codexDesktopSteer.steer({ threadId: item.threadId, title, text, mode: queueOnly ? 'queue' : 'steer' }); }
+    try { result = await this.codexDesktopSteer.steer({ threadId: item.threadId, title, text, mode: queueOnly ? 'queue' : 'steer', canSubmit }); }
     catch (error) { result = { code: 'script_failed', delivery: 'uncertain', message: String(error.message || error) }; }
     this.log?.(`Codex window steer ${item.threadId} request=${item.requestId} result=${result.code} delivery=${result.delivery} elapsed=${Date.now() - started}ms`);
+    if (result.code === 'already_handled' || !canSubmit()) return alreadyHandled();
     if (result.code === 'steer_accepted' || result.code === 'sent') {
-      if (retainReceipt) this.followups.update(item.id, { state: 'started', ...(queueOnly ? { desktopWindowSent: true } : { mode: 'steer' }), steerRequested: false, windowQueueRequested: false, startedAt: Date.now(), reason: null, blocking: false });
+      const startedNewTurn = queueOnly || result.code === 'sent';
+      if (retainReceipt) this.followups.update(item.id, { state: 'started', ...(startedNewTurn ? { desktopWindowSent: true } : { mode: 'steer' }), steerRequested: false, windowQueueRequested: false, startedAt: Date.now(), reason: null, blocking: false });
       else this.followups.remove(item.id);
-      if (queueOnly) this.emit('followup.started', item.threadId, publicItem(this.followups.get(item.id) || item), deviceId);
+      if (startedNewTurn) this.emit('followup.started', item.threadId, publicItem(this.followups.get(item.id) || item), deviceId);
       else this.emit('steer.accepted', item.threadId, { requestId: item.requestId, queuedItemId: item.id }, deviceId);
       return { accepted: true, requestId: item.requestId, result };
     }
@@ -2157,7 +2329,7 @@ class Connector {
       this.followups.update(item.id, { state: 'dispatching', deliveryPhase: 'probe', blocking: true });
       let wrote = false;
       const beforeWrite = () => { this.followups.update(item.id, { deliveryPhase: 'write' }); wrote = true; };
-      const args = { requestId: item.requestId, threadId: item.threadId, text: item.displayText || item.text,
+      const args = { requestId: item.requestId, threadId: item.threadId, text: item.displayText ?? item.text,
         attachments: item.attachments || [], model: item.model || undefined, effort: item.effort || undefined };
       try {
         let result;
@@ -2327,14 +2499,15 @@ class Connector {
 
   // Rename a task: through the Codex desktop's own rename (the running app does
   // not pick up a name written by another app-server), then in ours so the
-  // phone's list has it at once. Without the desktop app, ours alone.
+  // phone's list has it at once. If the desktop is closed or has no matching
+  // row, rename by thread ID and let the app-server enforce its writer lock.
   async renameCodexOnDesktop(threadId, name) {
     const wanted = String(name || '').replace(/\s+/g, ' ').trim().slice(0, 200);
     if (!wanted) throw new Error('名字不能为空');
     const detail = await this.codex.request('thread/read', { threadId, includeTurns: false }, 30_000);
     const title = normalizeThread(detail.thread || detail).title;
     const result = await runSidebarScript({ app: 'codex', action: 'rename', title, name: wanted, threadId, execFileFn: this.execFileFn });
-    if (!result.ok && result.reason !== 'desktop_not_running') throw sidebarError(result.reason);
+    if (!result.ok && !['desktop_not_running', 'row_not_found'].includes(result.reason)) throw sidebarError(result.reason);
     try { await this.codex.request('thread/name/set', { threadId, name: wanted }); }
     catch (error) {
       // The desktop holds the task and has already saved the new name itself.
@@ -2406,6 +2579,10 @@ class Connector {
       return this.claudeUsageState();
     }
     if (action === 'claude.image') return this.claudeTranscriptImage(args);
+    if (action === 'screen.keepAwake') {
+      if (!this.screenMonitor) throw new Error('电脑上的连接器还不支持屏幕唤醒设置');
+      return this.screenMonitor.setEnabled(args.enabled);
+    }
     // Light mode is the account's, sent to every connector; details are the
     // full rows of placeholders this computer uploaded.
     if (action === 'connector.lightMode') {
@@ -2425,7 +2602,7 @@ class Connector {
       return result;
     }
     if (action === 'file.historyDetailPart') {
-      this.lightDetailTransfers ||= new LightDetailTransfers((threadId, ids) => this.lightMode.details(threadId, ids));
+      this.lightDetailTransfers ||= new LightDetailTransfers((threadId, ids) => this.lightDetailsForTransfer(threadId, ids));
       try { return await this.lightDetailTransfers.read(args); }
       catch (error) {
         // New phones can poll the bounded scan without treating a deadline as
@@ -2443,6 +2620,12 @@ class Connector {
     if (action === 'file.upload.finish') return this.finishUpload(args);
     if (action === 'file.upload.abort') return this.abortUpload(args);
     if (action === 'backends.capabilities') {
+      // Refresh on demand instead of making an open settings sheet wait up to
+      // six hours; concurrent requests share one local, no-turn probe.
+      if (this.backends.has('claude')) {
+        await this.refreshClaudeModels?.({ onlyIfStale: true });
+        this.refreshObservedClaudeModels?.();
+      }
       const backends = {};
       for (const [id, backend] of this.backends) backends[id] = { displayName: backend.displayName, capabilities: id === 'claude' && typeof this.claudeCapabilities === 'function' ? this.claudeCapabilities(backend.capabilities()) : backend.capabilities() };
       return { backends, default: this.defaultBackendId };
@@ -2915,7 +3098,8 @@ class Connector {
     const offset = Math.max(0, Number(args.offset) || 0); const size = Math.min(512 * 1024, Number(args.size) || 512 * 1024);
     const fd = fs.openSync(target, 'r'); const buffer = Buffer.alloc(Math.min(size, Math.max(0, stat.size - offset)));
     try { fs.readSync(fd, buffer, 0, buffer.length, offset); } finally { fs.closeSync(fd); }
-    const result = { path: target, offset, total: stat.size, eof: offset + buffer.length >= stat.size };
+    // modifiedAt lets the phone tell a cached copy from a file changed since (an agent edited it).
+    const result = { path: target, offset, total: stat.size, modifiedAt: Math.round(stat.mtimeMs), eof: offset + buffer.length >= stat.size };
     // A phone that asks for binary gets the bytes beside the JSON (see encryptBlob); older phones get base64 data.
     if (args.binary) return { ...result, size: buffer.length, [FILE_BLOB]: buffer };
     return { ...result, data: buffer.toString('base64') };
@@ -3174,7 +3358,7 @@ class Connector {
       ? { ...value, text: sanitizeUploadReferences(value.text) } : value;
     const full = encryptJson(this.config.accountKey, 'history.item', threadId, itemId, publicValue);
     const placeholder = this.lightMode?.placeholder(publicValue);
-    if (!placeholder) return full;
+    if (!placeholder) { this.historyUploadDigests?.()?.noteFrame(full, threadId, itemId, publicValue); return full; }
     // The encryption nonce changes every time even when the underlying tool
     // row is identical. An in-memory digest lets LightMode avoid appending an
     // identical copy while retaining every genuine update to the same id.
@@ -3183,20 +3367,91 @@ class Connector {
     const key = Buffer.isBuffer(this.config.accountKey) ? this.config.accountKey : Buffer.from(this.config.accountKey, 'base64');
     const contentHash = crypto.createHmac('sha256', key).update('khlink-light-detail-v1\0').update(JSON.stringify([threadId, itemId, publicValue])).digest('base64');
     try { await this.lightMode.save(threadId, { id: itemId, ...full }, contentHash); } catch (error) { this.log(error); return full; }
-    return encryptJson(this.config.accountKey, 'history.item', threadId, itemId, placeholder);
+    const frame = encryptJson(this.config.accountKey, 'history.item', threadId, itemId, placeholder);
+    this.historyUploadDigests?.()?.noteFrame(frame, threadId, itemId, placeholder);
+    return frame;
+  }
+
+  // What this computer already uploaded (see upload-digests.js). Off in unit
+  // tests unless a test turns it on; one record per account and relay.
+  historyUploadDigests() {
+    if (this.uploadDigests && this.uploadDigestsKey === this.config?.accountKey) return this.uploadDigests;
+    if (!this.config?.accountKey || !this.config.configFile || (process.env.NODE_TEST_CONTEXT && !this.uploadDedupe)) return null;
+    const { UploadDigests, UploadStats } = require('./upload-digests');
+    const namespace = crypto.createHash('sha256').update(String(this.config.accountKey)).update('|').update(String(this.config.serverUrl || '')).digest('hex').slice(0, 16);
+    this.uploadDigests?.flush();
+    this.uploadDigests = new UploadDigests(path.join(path.dirname(this.config.configFile), 'upload-digests', namespace), this.config.accountKey);
+    this.uploadDigestsKey = this.config.accountKey;
+    this.uploadStats ||= new UploadStats((line) => console.log(line));
+    return this.uploadDigests;
+  }
+
+  // Older connectors could save only the first images of a large generated
+  // result. On demand, recover that one item from the original Codex rollout;
+  // do not replay or change the conversation itself.
+  async lightDetailsForTransfer(threadId, ids) {
+    const rows = await this.lightMode.details(threadId, ids);
+    if (rows.length !== 1 || ids.length !== 1 || !validThreadId(threadId) || !this.config?.accountKey) return rows;
+    const row = rows[0];
+    if (row.id !== ids[0]) return rows;
+    let current;
+    try { current = decryptJson(this.config.accountKey, { kind: 'history.item', threadId, id: row.id, nonce: row.nonce, ciphertext: row.ciphertext }); }
+    catch { return rows; }
+    if (current?.type !== 'imageGeneration' || !Array.isArray(current.images)) return rows;
+    const file = this.rolloutFilesByThread?.get(threadId) || this.findRolloutFile(threadId);
+    if (!file || sessionThreadId(file) !== threadId) return rows;
+    try {
+      const size = fs.statSync(file).size;
+      const start = Math.max(0, size - 32 * 1024 * 1024);
+      const discardPartialLine = start > 0 && needsPartialRolloutLineDiscard(file, start);
+      const deadline = Date.now() + 15_000;
+      let recovered = null;
+      for await (const line of readRolloutLines(file, start, size, { discardPartialLine, holdTrailingPartial: true })) {
+        if (this.stopping || Date.now() > deadline) break;
+        if (!line.includes(row.id) || line.length > 24 * 1024 * 1024) continue;
+        let record; try { record = JSON.parse(line); } catch { continue; }
+        if (record?.payload?.id !== row.id) continue;
+        const value = rolloutItem(record);
+        if (value?.type === 'imageGeneration' && value.images?.length > current.images.length) recovered = { ...current, images: value.images };
+      }
+      if (recovered) {
+        const fixed = { id: row.id, ...encryptJson(this.config.accountKey, 'history.item', threadId, row.id, recovered) };
+        // Save only the repaired encrypted cache, so another phone can still
+        // recover all images after the rollout's tail has moved on.
+        const key = Buffer.isBuffer(this.config.accountKey) ? this.config.accountKey : Buffer.from(this.config.accountKey, 'base64');
+        const hash = crypto.createHmac('sha256', key).update('khlink-light-detail-v1\0').update(JSON.stringify([threadId, row.id, recovered])).digest('base64');
+        try { await this.lightMode.save(threadId, fixed, hash); } catch { /* Still return the repaired detail for this transfer. */ }
+        return [fixed];
+      }
+    } catch { /* Preserve the existing detail if the local rollout is unavailable. */ }
+    return rows;
   }
 
   // Every history item upload. The relay stores items only for a thread it
   // already has (a foreign key): when that row is missing it answers 500, so
   // upload the thread's index row and try once more.
+  //
+  // Rows this computer already uploaded unchanged are not sent again: after a
+  // restart or update, re-reading conversations used to send them all again.
   async putHistoryItems(threadId, items) {
-    const put = () => this.api.request(this.api.path(`/history/threads/${encodeURIComponent(threadId)}/items`), { method: 'PUT', body: { items } });
-    try { return await put(); }
+    const digests = this.historyUploadDigests?.();
+    const { send, skipped } = digests ? digests.filter(threadId, items) : { send: items.map((row) => ({ row, info: { kind: 'other' } })), skipped: [] };
+    this.uploadStats?.add(threadId, send, skipped);
+    if (!send.length && skipped.length) return { saved: 0, skipped: skipped.length };
+    const rows = send.map((item) => item.row);
+    const put = () => this.api.request(this.api.path(`/history/threads/${encodeURIComponent(threadId)}/items`), { method: 'PUT', body: { items: rows } });
+    let result;
+    try { result = await put(); }
     catch (error) {
       if (!/^500\b/.test(String(error?.message || '')) || !(await this.ensureThreadIndexed(threadId))) throw error;
-      try { return await put(); }
+      // The relay had no row for this conversation, so none of its items
+      // either: what was skipped goes up again on the next sync.
+      digests?.forget(threadId);
+      try { result = await put(); }
       catch (retryError) { throw new Error(`history items for ${threadId} refused even after uploading its thread row: ${retryError.message}`); }
     }
+    digests?.remember(threadId, send);
+    return result;
   }
 
   async ensureThreadIndexed(threadId) {
@@ -3932,7 +4187,7 @@ class Connector {
         const allowFollowupMatch = options.backfillStage !== 'full' || startedAt >= Date.now() - FOLLOWUP_RECONCILE_MAX_AGE_MS;
         if (allowFollowupMatch) {
           started = userText
-            ? this.followups.matchStarted(threadId, userText, startedAt)
+            ? this.followups.matchStarted(threadId, userText, startedAt, rolloutRequestMarker(record))
             : this.followups.matchStartedByLocalImagePaths?.(threadId, localImagePaths, startedAt);
         }
         if (started) {
@@ -4071,6 +4326,9 @@ class Connector {
     let streamWaitingChanged = false;
     let latestRolloutSettings = null;
     let lastLiveTailAt = Date.now();
+    // The recent tail has already been sent before the full replay starts.
+    // Follow only newly appended bytes while that replay is in progress.
+    let liveTailOffset = Number.isSafeInteger(options.liveTailStartOffset) ? options.liveTailStartOffset : undefined;
     let pending = []; let pendingBytes = 12; let metadataSynced = false;
     this.desktopMetadataAt ||= new Map();
     const flush = async () => {
@@ -4096,7 +4354,8 @@ class Connector {
         const hadFullPartialOffset = this.rolloutPartialOffsets.has(file);
         const fullPartialOffset = this.rolloutPartialOffsets.get(file);
         try {
-          await this.syncRecentRolloutTailDuringBackfill(threadId, file);
+          const nextOffset = await this.syncRecentRolloutTailDuringBackfill(threadId, file, liveTailOffset);
+          if (Number.isSafeInteger(nextOffset)) liveTailOffset = nextOffset;
         } finally {
           if (hadFullOffset) this.rolloutOffsets.set(file, fullOffset);
           else this.rolloutOffsets.delete(file);
@@ -4147,7 +4406,7 @@ class Connector {
         const allowFollowupMatch = options.backfillStage !== 'full' || startedAt >= Date.now() - FOLLOWUP_RECONCILE_MAX_AGE_MS;
         if (allowFollowupMatch) {
           started = userText
-            ? this.followups.matchStarted(threadId, userText, startedAt)
+            ? this.followups.matchStarted(threadId, userText, startedAt, rolloutRequestMarker(record))
             : this.followups.matchStartedByLocalImagePaths?.(threadId, localImagePaths, startedAt);
         }
         if (started) {
@@ -4209,11 +4468,13 @@ class Connector {
     return trailingCursor !== null ? { partial: true, threadId, offset: trailingCursor } : true;
   }
 
-  async syncRecentRolloutTailDuringBackfill(threadId, file) {
+  async syncRecentRolloutTailDuringBackfill(threadId, file, liveOffset) {
     let stat;
     try { stat = fs.statSync(file); } catch { return; }
-    if (!stat.size) return;
-    const startOffset = Math.max(0, stat.size - LIVE_ROLLOUT_TAIL_BYTES);
+    if (!stat.size) return 0;
+    const startOffset = Number.isSafeInteger(liveOffset) && liveOffset >= 0 && liveOffset <= stat.size
+      ? liveOffset : Math.max(0, stat.size - LIVE_ROLLOUT_TAIL_BYTES);
+    if (startOffset === stat.size) return startOffset;
     // The full replay already owns this thread's serialized rollout queue.
     // Re-enter the worker directly: queueing another sync here would make the
     // full replay wait for a tail that is itself waiting for the full replay.
@@ -4222,12 +4483,15 @@ class Connector {
     const fullPartial = partials.get(file);
     partials.delete(file); // The full replay's boundary must not rewind this tail.
     try {
-      await this.performDesktopRolloutSync(threadId, file, {
+      const result = await this.performDesktopRolloutSync(threadId, file, {
         allowBackfill: true,
         startOffset,
         actualSize: stat.size,
         backfillStage: 'live-tail',
       });
+      if (result?.partial && Number.isSafeInteger(result.offset)) return result.offset;
+      if (result === true) return this.rolloutOffsets?.get(file) ?? startOffset;
+      return startOffset;
     } finally {
       if (hadPartial) partials.set(file, fullPartial);
       else partials.delete(file);
@@ -4242,8 +4506,14 @@ class Connector {
     try { stat = fs.statSync(file); } catch { return { synced: false, queued: false, threadId, mode: 'unavailable' }; }
     const previous = this.historyBackfills.get(threadId);
     const activityAt = Number(readConversationActivityAt(file)) || 0;
+    const checkpoint = previous?.checkpoint;
+    const checkpointValid = previous?.stage === 'full' && previous.version >= HISTORY_BACKFILL_VERSION &&
+      previous.file === file && Number.isSafeInteger(checkpoint?.offset) && checkpoint.offset > 0 &&
+      checkpoint.offset <= stat.size && typeof checkpoint.hash === 'string' &&
+      rolloutCheckpointHash(file, checkpoint.offset) === checkpoint.hash;
     const previousIsFresh = previous?.version >= HISTORY_BACKFILL_VERSION &&
-      previous.file === file && previous.size >= stat.size && Number(previous.activityAt) === activityAt;
+      previous.file === file && previous.size === stat.size && Number(previous.activityAt) === activityAt &&
+      (!checkpoint || checkpointValid);
     if (previousIsFresh && previous.stage === 'full') {
       return { synced: true, queued: false, threadId, mode: 'full-history', already: true };
     }
@@ -4258,19 +4528,22 @@ class Connector {
       return { synced: false, queued: true, threadId, mode: 'full-history' };
     }
     this.rolloutFilesByThread?.set(threadId, file);
+    // Only resume an already completed full replay from a verified local
+    // checkpoint. Older entries have no checkpoint and take the safe full path
+    // once; truncation or a rewritten boundary also requires a full replay.
     // Open the newest bounded tail first. The old implementation set offset=0
     // and let syncDesktopRollout allocate the entire unread range; a single
     // multi-gigabyte rollout could therefore stop the connector before the
     // phone ever received the latest messages. The full replay below is still
     // durable, but it starts only after this fast tail has been published.
-    const tailStart = Math.max(0, stat.size - HISTORY_RECENT_TAIL_BYTES);
+    const tailStart = checkpointValid ? checkpoint.offset : Math.max(0, stat.size - HISTORY_RECENT_TAIL_BYTES);
     const deferFullReplay = stat.size > HISTORY_FULL_REPLAY_MAX_BYTES;
     const promise = (async () => {
       let fullCompleted = tailStart === 0;
       const tailResult = await this.syncDesktopRollout(threadId, file, {
         allowBackfill: true,
         startOffset: tailStart,
-        backfillStage: 'tail',
+        backfillStage: checkpointValid ? 'incremental' : 'tail',
       });
       if (tailResult?.partial) {
         // The rollout currently ends in an incomplete JSONL record. Keep the
@@ -4299,6 +4572,17 @@ class Connector {
       }
       if (this.stopping) return;
       this.emit('history.updated', threadId, { threadId, itemCount: 0, updatedAt: Date.now(), recentHistory: true });
+      const tailSyncedOffset = this.rolloutOffsets.get(file);
+      if (checkpointValid) {
+        const nextHash = rolloutCheckpointHash(file, tailSyncedOffset);
+        if (nextHash) {
+          this.historyBackfills.set(threadId, { version: HISTORY_BACKFILL_VERSION, file, size: tailSyncedOffset,
+            activityAt: Number(readConversationActivityAt(file)) || 0, stage: 'full',
+            checkpoint: { offset: tailSyncedOffset, hash: nextHash } });
+          this.saveHistoryDigests();
+        }
+        return;
+      }
       // Give websocket heartbeats and any newly arrived command a scheduling
       // turn before beginning the potentially long historical replay.
       await yieldToEventLoop();
@@ -4334,13 +4618,17 @@ class Connector {
         // watcher callback will re-enter the bounded streaming path instead of
         // advancing past the unsaved historical prefix.
         this.rolloutOffsets.set(file, 0);
-        const fullResult = await this.syncDesktopRollout(threadId, file, { allowBackfill: true, startOffset: 0, backfillStage: 'full' });
+        const fullResult = await this.syncDesktopRollout(threadId, file, { allowBackfill: true, startOffset: 0, backfillStage: 'full', liveTailStartOffset: tailSyncedOffset });
         if (fullResult !== true) return;
         fullCompleted = true;
       }
       if (!fullCompleted || this.stopping) return;
       const done = fs.statSync(file);
-      this.historyBackfills.set(threadId, { version: HISTORY_BACKFILL_VERSION, file, size: done.size, activityAt: Number(readConversationActivityAt(file)) || 0, stage: 'full' });
+      const syncedOffset = this.rolloutOffsets.get(file);
+      const checkpointHash = rolloutCheckpointHash(file, syncedOffset);
+      this.historyBackfills.set(threadId, { version: HISTORY_BACKFILL_VERSION, file,
+        size: checkpointHash ? syncedOffset : done.size, activityAt: Number(readConversationActivityAt(file)) || 0, stage: 'full',
+        ...(checkpointHash ? { checkpoint: { offset: syncedOffset, hash: checkpointHash } } : {}) });
       this.saveHistoryDigests();
       this.emit('history.updated', threadId, { threadId, itemCount: 0, updatedAt: Date.now(), fullHistory: true });
     })().catch((error) => {
@@ -4395,7 +4683,21 @@ class Connector {
 
   reconcileStartedFollowups(threadId, file, options = {}) {
     if (!this.followups?.items) return;
-    const candidates = this.followups.items.filter((item) => item.threadId === threadId &&
+    // A delayed native reply may arrive after a timeout or connector restart.
+    // Its raw, unescaped question ID is the receipt; the normal display-text
+    // normalization deliberately accepts escaped messages and is not proof.
+    const nativeCandidates = this.followups.items.filter((item) => item.threadId === threadId && item.nativeAsync &&
+      (options.onlyStarted ? item.state === 'started' : ['uncertain', 'started'].includes(item.state)));
+    for (const item of options.exactRequestId ? [] : nativeCandidates) {
+      if (!nativeAsyncAnswerAfter(file, item.rolloutOffset, parseAsyncAnswers(item.displayText || item.text))) continue;
+      const started = this.followups.remove(item.id);
+      if (!started) continue;
+      const startedAt = Date.now();
+      if (!options.onlyStarted && item.state !== 'started') this.emit('followup.started', threadId, { ...publicItem(started), startedAt }, started.sourceDeviceId);
+      this.noteMatchedRolloutFollowupStarted(threadId, file, startedAt);
+    }
+    const candidates = this.followups.items.filter((item) => !item.nativeAsync && item.threadId === threadId &&
+      (!options.exactRequestId || item.requestId === options.exactRequestId) &&
       (options.onlyStarted ? item.state === 'started' : ['desktop_queued', 'dispatching', 'pending', 'uncertain', 'started'].includes(item.state)));
     if (!candidates.length) return;
     const start = Math.max(0, Math.min(...candidates.map((item) => Number.isFinite(item.rolloutOffset) ? item.rolloutOffset : 0)));
@@ -4429,9 +4731,10 @@ class Connector {
           const startedAt = Date.parse(record.timestamp) || Date.now();
           // The display-text helpers intentionally remove the invisible
           // request marker. Inspect the original record for identity instead.
-          const marker = options.onlyStarted ? requestMarkerId(JSON.stringify(record.payload || {})) : null;
+          const marker = rolloutRequestMarker(record);
+          if (options.exactRequestId && marker !== options.exactRequestId) continue;
           const exact = marker && candidates.find((item) => item.requestId === marker);
-          const started = options.onlyStarted ? (exact && this.followups.remove(exact.id)) : this.followups.matchStarted(threadId, text, startedAt);
+          const started = options.onlyStarted ? (exact && this.followups.remove(exact.id)) : this.followups.matchStarted(threadId, text, startedAt, marker);
           if (!started) continue;
           const index = candidates.findIndex((item) => item.id === started.id); if (index >= 0) candidates.splice(index, 1);
           if (!options.onlyStarted) this.emit('followup.started', threadId, { ...publicItem(started), startedAt }, started.sourceDeviceId);
@@ -4755,7 +5058,8 @@ class Connector {
   }
 
   async refreshAgentAvailability() {
-    if (this.stopping || !this.desktopAdapter?.agentPresence) return false;
+    // The desktop adapter is a Windows program (UI Automation).
+    if (this.stopping || process.platform !== 'win32' || !this.desktopAdapter?.agentPresence) return false;
     // The adapter is serialized. Never put a presence request behind a long
     // send/probe, and never time out an in-flight command just to refresh a
     // decorative tab color.
@@ -4823,11 +5127,16 @@ class Connector {
       sentAt,
       agents: this.agentAvailabilityPayload(),
       installed: this.agentInstalledPayload(),
+      // The phone fills a new task's folder and agent list from this: a Mac
+      // has /Users/... folders and no Windows-only agents.
+      // hermes: how Hermes runs there ("wsl", "ssh", "local", "windows").
+      system: { platform: process.platform, home: os.homedir(), hermes: this.hermesConfig?.transport || null },
       // A full set clears old cached pins even if they changed while the
       // connector/phone was offline or their history row is on an old page.
       codexPins: pins ? { connectorId: this.config?.deviceId, ids: pins.ids } : null,
       claudePins: claudePins ? { connectorId: this.config?.deviceId, ids: claudePins } : null,
       pcLoad: this.pcLoad?.snapshot() || null,
+      screen: this.screenMonitor?.snapshot() || null,
       // New content cannot reach the relay (null when it can): the phone says
       // so instead of only showing the computer as connected.
       uploadIssue: this.api?.uploadIssue?.(sentAt) || null,
@@ -4859,17 +5168,20 @@ class Connector {
     if (this._agentInstalled && now - this._agentInstalledAt < 60_000) return this._agentInstalled;
     const home = os.homedir();
     const exists = (file) => { try { return fs.existsSync(file); } catch { return false; } };
+    const windows = process.platform === 'win32';
     let claude = exists(path.join(home, '.claude'));
     if (!claude) { try { claude = claudeDataDirs().some((dir) => exists(dir)); } catch {} }
     this._agentInstalled = {
       codex: !this.codexMissing,
       claude,
-      dsh: Boolean(this.dshOnline) || exists(process.env.DSH_HOME || path.join(home, '.dsh')),
+      // DSH, Pi (PI WEB) and Antigravity are driven through their Windows
+      // apps; elsewhere they count as installed only while actually online.
+      dsh: Boolean(this.dshOnline) || (windows && exists(process.env.DSH_HOME || path.join(home, '.dsh'))),
       hermes: Boolean(this.hermesTransport),
-      pi: Boolean(this.piOnline) || exists(path.join(home, '.pi')),
+      pi: Boolean(this.piOnline) || (windows && exists(path.join(home, '.pi'))),
       // Antigravity keeps its conversations under ~/.gemini/antigravity.
-      antigravity: exists(path.join(home, '.gemini', 'antigravity'))
-        || exists(path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'Programs', 'Antigravity', 'Antigravity.exe')),
+      antigravity: windows && (exists(path.join(home, '.gemini', 'antigravity'))
+        || exists(path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'Programs', 'Antigravity', 'Antigravity.exe'))),
     };
     this._agentInstalledAt = now;
     return this._agentInstalled;
@@ -4940,7 +5252,7 @@ class Connector {
   // Every agent's waiting messages. The phone replaces its whole queue list
   // with a snapshot, so a snapshot of Codex's alone wiped Claude's and Pi's.
   phoneQueueItems(threadId = null) {
-    return [...this.allFollowupItems(threadId), ...this.claudeQueueItems(threadId), ...(this.piQueueItems?.(threadId) || []), ...(this.antigravityQueueItems?.(threadId) || []), ...(this.sendReceipts?.visible(threadId) || [])]
+    return [...this.allFollowupItems(threadId), ...this.claudeQueueItems(threadId), ...(this.piQueueItems?.(threadId) || []), ...(this.antigravityQueueItems?.(threadId) || []), ...(this.sendReceipts?.visible(threadId) || []).filter(row => row.backend !== 'codex' || !this.followups?.get?.(row.id))]
       .sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
   }
 
@@ -4952,7 +5264,7 @@ class Connector {
   }
 
   async syncNativeDesktopQueues(activeThreads) {
-    if (!activeThreads.length || !this.desktopAdapter?.listQueued) return;
+    if (!activeThreads.length || process.platform !== 'win32' || !this.desktopAdapter?.listQueued) return;
     this.threadState ||= new Map();
     const byTitle = new Map();
     for (const thread of activeThreads) {
@@ -5106,7 +5418,7 @@ class Connector {
           : this.dshThreads?.has(threadId) ? 'dsh' : this.hermesThreads?.has(threadId) ? 'hermes' : this.defaultBackendId);
   }
 
-  async readConversationUsage(threadId, sourceDeviceId = null, historyFrom = 0) {
+  async readConversationUsage(threadId, sourceDeviceId = null, historyFrom = 0, requestedPeriods = null) {
     if (!threadId) throw new Error('缺少对话 ID');
     const backend = this.threadBackendId(threadId) || 'codex';
     let file = null;
@@ -5116,21 +5428,49 @@ class Connector {
       file = meta?.transcriptFile || (meta?.sessionId ? usageTranscriptPath(meta.workdir, meta.sessionId, this.claudeDesktop?.projectsRoot) : null);
     }
     if (backend === 'pi') file = this.piThreads?.get(threadId)?.sessionFile || null;
-    this.conversationUsageReader ||= new ConversationUsageReader();
-    const work = this.conversationUsageReader.read(backend, file, { historyFrom }).catch(error => {
+    const periods = validPeriodStarts(requestedPeriods) ? { todayFrom: requestedPeriods.todayFrom, monthFrom: requestedPeriods.monthFrom } : null;
+    if (requestedPeriods && !periods) throw new Error('用量统计时间范围无效');
+    let work;
+    if (backend === 'dsh') {
+      work = readDshDistribution(this.dsh, this.dshThreads?.get(threadId), periods, threadId);
+    } else if (backend === 'hermes') {
+      const meta = this.hermesThreads?.get(threadId);
+      work = this.hermesTransport && meta?.sessionId
+        ? this.hermesTransport.store('usage', meta.sessionId, String(periods?.todayFrom || 0), String(periods?.monthFrom || 0))
+        : Promise.resolve({ status: 'unavailable', reason: '暂时找不到 Hermes 对话记录' });
+      if (!periods) work = Promise.resolve(work).then(snapshot => {
+        const completedTurns = meta?.completedUsage || [];
+        const last = completedTurns.at(-1);
+        return { schemaVersion: 1, backend, status: snapshot.status, totals: snapshot.totals,
+          partial: snapshot.periods?.all?.partial || false, reason: snapshot.reason,
+          updatedAt: Math.max(meta?.updatedAt || 0, last?.completedAt || 0), usageUpdatedAt: last?.completedAt || 0,
+          completedTurns, measuredReplyMs: meta?.measuredReplyMs, turn: last?.usage, turnId: last?.turnId };
+      });
+    } else {
+      const readerKey = periods ? 'distributionUsageReader' : 'conversationUsageReader';
+      this[readerKey] ||= new ConversationUsageReader(periods ? { maxHistoryBytes: 64 * 1024 * 1024, maxFiles: 2 } : {});
+      work = this[readerKey].read(backend, file, { historyFrom: periods?.monthFrom || historyFrom, periods });
+    }
+    work = Promise.resolve(work).catch(error => {
       this.log(error);
       return { schemaVersion: 1, backend, status: 'unavailable', reason: '对话用量记录暂时无法读取，请稍后重试' };
     });
-    // Large Claude/Pi histories must not hold up a phone command or the
-    // connector's heartbeat. Finish asynchronously and send the same encrypted
-    // per-device result; future reads reuse the ongoing scan or byte offset.
+    // Large histories are scanned asynchronously; only the asking phone gets
+    // the eventual result. Statistics omit turn details to keep frames small.
+    const connectorId = this.config?.deviceId || this.api?.config?.deviceId || null;
+    const shape = value => periods ? { schemaVersion: 1, backend, connectorId,
+      status: value.status, periods: value.periods, reason: value.reason, updatedAt: value.usageUpdatedAt || value.updatedAt || Date.now(),
+      todayFrom: periods.todayFrom, monthFrom: periods.monthFrom,
+      requestKey: typeof requestedPeriods?.requestKey === 'string' ? requestedPeriods.requestKey.slice(0, 64) : '' } : { ...value, connectorId };
     let timer;
     const result = await Promise.race([work, new Promise(resolve => { timer = setTimeout(() => resolve(null), 3_000); })]);
     clearTimeout(timer);
-    const connectorId = this.config?.deviceId || this.api?.config?.deviceId || null;
-    if (result) return { ...result, connectorId };
-    work.then(value => { if (!this.stopping) this.emit('thread.usage', threadId, { ...value, connectorId }, sourceDeviceId); });
-    return { schemaVersion: 1, backend, connectorId, status: 'scanning', reason: '正在整理此对话的用量记录' };
+    if (result) return shape(result);
+    work.then(value => { if (!this.stopping) {
+      if (periods) this.emit('file.result', threadId, { event: 'thread.usage.stats', result: shape(value) }, sourceDeviceId);
+      else this.emit('thread.usage', threadId, shape(value), sourceDeviceId);
+    } });
+    return shape({ schemaVersion: 1, backend, status: 'scanning', reason: '正在整理此对话的用量记录' });
   }
 
   backendForThread(threadId) {
@@ -5738,6 +6078,7 @@ class Connector {
     clearInterval(this.desktopAgentPresenceTimer); this.desktopAgentPresenceTimer = null;
     await this.direct?.close();
     await this.directHistory?.flush();
+    this.uploadDigests?.flush(); this.uploadStats?.report();
     if (this._claudeThreadsSaveTimer || this._claudeThreadsWrite) { this._claudeThreadsClosing = true; this.flushClaudeThreads(); }
     await this.writeStatus(false, 'reloading');
     try { this.ws?.close(1012, 'connector update'); } catch { /* already closed */ }
@@ -5754,6 +6095,7 @@ class Connector {
       this.stopping = true; this.lifecycle = 'draining';
       await this.direct?.close();
       await this.directHistory?.flush();
+    this.uploadDigests?.flush(); this.uploadStats?.report();
       clearInterval(this.heartbeat); this.heartbeat = null;
       clearInterval(this.statusHeartbeat); this.statusHeartbeat = null;
       clearInterval(this.followupRetryTimer); this.followupRetryTimer = null;
@@ -5763,7 +6105,7 @@ class Connector {
       clearInterval(this._claudeStatuslineTimer); this._claudeStatuslineTimer = null;
       try { this.agentAccounts?.stop(); this.stopClaudeDesktopSync?.(); this.claude?.stop(); } catch (error) { this.log(error); }
       clearInterval(this.realtimeSyncTimer); this.realtimeSyncTimer = null;
-      clearTimeout(this.reconnectTimer); this.reconnectTimer = null; clearInterval(this.stallTimer); this.stallTimer = null; clearInterval(this.codexUsageTimer); this.codexUsageTimer = null; this.pcLoad?.stop(); if (this._claudeThreadsSaveTimer || this._claudeThreadsWrite) { this._claudeThreadsClosing = true; this.flushClaudeThreads(); }
+      clearTimeout(this.reconnectTimer); this.reconnectTimer = null; clearInterval(this.stallTimer); this.stallTimer = null; clearInterval(this.codexUsageTimer); this.codexUsageTimer = null; this.pcLoad?.stop(); this.screenMonitor?.stop(); if (this._claudeThreadsSaveTimer || this._claudeThreadsWrite) { this._claudeThreadsClosing = true; this.flushClaudeThreads(); }
       for (const timer of this.desktopSyncTimers.values()) clearTimeout(timer);
       this.desktopSyncTimers.clear();
       try { this.sessionWatcher?.close?.(); } catch {}
@@ -5985,7 +6327,9 @@ function withAttachmentContext(text, attachments) {
     return `[风筑附件] ${item.name}${size}\n路径：${item.path}`;
   });
   if (!rows.length) return value;
-  return value ? `${value}\n\n${rows.join('\n\n')}` : rows.join('\n\n');
+  // Older queued entries may already carry their attachment blocks in text.
+  const existing = new Set(value.split(/\r?\n\r?\n/).map((part) => part.replace(/\r\n/g, '\n')));
+  return [value, ...rows.filter((row) => !existing.has(row))].filter(Boolean).join('\n\n');
 }
 
 const MAX_HISTORY_ATTACHMENT_BYTES = 650 * 1024;
@@ -6417,10 +6761,17 @@ function rolloutStatus(record) {
   return null;
 }
 
+function rolloutRequestMarker(record) {
+  const payload = record?.payload;
+  if (record?.type === 'event_msg' && payload?.type === 'user_message') return requestMarkerId(payload.message || payload.text);
+  if (record?.type === 'response_item' && payload?.type === 'message' && payload.role === 'user') return requestMarkerId(extractRolloutText(payload));
+  return null;
+}
+
 function rolloutUserText(record) {
   const payload = record?.payload || {};
-  if (record?.type === 'event_msg' && payload.type === 'user_message') return stripLocalImageMarkup(payload.message || payload.text || '');
-  if (record?.type === 'response_item' && payload.type === 'message' && payload.role === 'user') return stripLocalImageMarkup(extractRolloutText(payload));
+  if (record?.type === 'event_msg' && payload.type === 'user_message') return normalizeDesktopQuestionReply(stripLocalImageMarkup(payload.message || payload.text || ''));
+  if (record?.type === 'response_item' && payload.type === 'message' && payload.role === 'user') return normalizeDesktopQuestionReply(stripLocalImageMarkup(extractRolloutText(payload)));
   return '';
 }
 
@@ -6862,6 +7213,23 @@ function sameRolloutFile(left, right) {
   return canonicalRolloutPath(left) === canonicalRolloutPath(right);
 }
 
+// Local integrity marker for an append-only rollout checkpoint. The first and
+// final 4 KiB catch common replacement/truncation without storing conversation text.
+function rolloutCheckpointHash(file, offset) {
+  if (!Number.isSafeInteger(offset) || offset <= 0) return null;
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    if (fs.fstatSync(fd).size < offset) return null;
+    const length = Math.min(4096, offset);
+    const first = Buffer.alloc(length); const last = Buffer.alloc(length);
+    if (fs.readSync(fd, first, 0, length, 0) !== length ||
+        fs.readSync(fd, last, 0, length, offset - length) !== length) return null;
+    return crypto.createHash('sha256').update(String(offset)).update('\0').update(first).update(last).digest('hex');
+  } catch { return null; }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
 function isNewerRolloutFile(candidate, current) {
   if (!current) return true;
   if (sameRolloutFile(candidate, current)) return true;
@@ -7122,7 +7490,7 @@ function rolloutItem(record) {
     if (error) return { type: 'turnError', ...clip(error), status: 'failed' };
     if (payload.type === 'item_completed') return typedRolloutItem(payload.item, payload);
     if (payload.type === 'user_message') {
-      const text = stripRequestMarker(stripLocalImageMarkup(payload.message || payload.text || ''));
+      const text = normalizeDesktopQuestionReply(stripRequestMarker(stripLocalImageMarkup(payload.message || payload.text || '')));
       const localImages = Array.isArray(payload.local_images) ? payload.local_images : [];
       const imageRows = localImages.map((value) => {
         const rawName = String(value || '').split(/[\\/]/).pop() || '图片附件';
@@ -7143,7 +7511,8 @@ function rolloutItem(record) {
   if (type === 'message') {
     const images = extractInlineImages(payload);
     const user = payload.role === 'user';
-    const visible = stripProposedPlanMarkup(stripRequestMarker(stripLocalImageMarkup(text)));
+    const cleaned = stripProposedPlanMarkup(stripRequestMarker(stripLocalImageMarkup(text)));
+    const visible = user ? normalizeDesktopQuestionReply(cleaned) : cleaned;
     const fallback = user && images.length ? '图片附件' : '';
     return visible || fallback ? { type: user ? 'userMessage' : 'agentMessage', ...clip(visible || fallback), ...(images.length ? { images } : {}), status: null } : null;
   }

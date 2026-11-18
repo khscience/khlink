@@ -25,8 +25,10 @@ Thanks for helping improve khLink.
   personal paths.
 - Most documentation is in Chinese under `docs/zh-CN/`; English is welcome too.
 
-By submitting a contribution you confirm you have the right to license it under the MIT
-license of this repository.
+By submitting a contribution you confirm you have the right to license it under the license
+of this repository (PolyForm Noncommercial License 1.0.0, see LICENSE), and you allow
+khscience to also license your contribution to others under other terms, including
+commercial licenses.
 
 ---
 
@@ -49,4 +51,4 @@ license of this repository.
 - 不要提交凭据、真实用户数据、私人对话的截图或个人电脑路径。
 - 文档大多是中文，放在 `docs/zh-CN/`；也欢迎英文文档。
 
-提交贡献即表示你确认有权按本仓库的 MIT 许可证授权这些内容。
+提交贡献即表示你确认有权按本仓库的许可证（PolyForm Noncommercial License 1.0.0，见 LICENSE）授权这些内容，并同意 khscience 也可以按其他条款（包括商用授权）把你的贡献授权给他人。

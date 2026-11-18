@@ -34,7 +34,7 @@ internal class DirectPeer(context: Context, private val receive: (String) -> Uni
     @Volatile private var closed = false
     private val wakeLock = context.getSystemService(PowerManager::class.java)
         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "KHLink:DirectConnection").apply { setReferenceCounted(false) }
-    private data class Assembly(val total: Int, val at: Long, var next: Int = 0, val bytes: ByteArrayOutputStream = ByteArrayOutputStream())
+    private data class Assembly(val total: Int, var at: Long, var next: Int = 0, val bytes: ByteArrayOutputStream = ByteArrayOutputStream())
     private val assemblies = mutableMapOf<String, Assembly>()
 
     init {
@@ -82,7 +82,7 @@ internal class DirectPeer(context: Context, private val receive: (String) -> Uni
         val connection = factory.createPeerConnection(config, object : PeerConnection.Observer {
             override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-                if (!closed && state == PeerConnection.IceConnectionState.FAILED) failed("当前网络无法穿透，请换用同一 Wi-Fi／热点或服务器模式")
+                if (!closed && state == PeerConnection.IceConnectionState.FAILED) failed(ICE_FAILED)
             }
             override fun onIceConnectionReceivingChange(receiving: Boolean) {}
             override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
@@ -102,7 +102,7 @@ internal class DirectPeer(context: Context, private val receive: (String) -> Uni
                     override fun onStateChange() {
                         when (value.state()) {
                             DataChannel.State.OPEN -> { opened(); wake.trySend(Unit) }
-                            DataChannel.State.CLOSED -> if (!closed) failed("直连已断开，请重新扫描电脑二维码")
+                            DataChannel.State.CLOSED -> if (!closed) failed(CHANNEL_CLOSED)
                             else -> Unit
                         }
                     }
@@ -166,7 +166,7 @@ internal class DirectPeer(context: Context, private val receive: (String) -> Uni
         require(entry.total == total && entry.next == index) { "直连分片顺序错误" }
         val bytes = Base64.decode(data, Base64.NO_WRAP)
         require(bytes.size <= 8192 && entry.bytes.size() + bytes.size <= 8 * 1024 * 1024) { "直连消息过大" }
-        entry.bytes.write(bytes); entry.next++
+        entry.bytes.write(bytes); entry.next++; entry.at = System.currentTimeMillis()
         if (entry.next == total) { assemblies.remove(id); receive(entry.bytes.toString("UTF-8")) }
     }
 
@@ -177,5 +177,9 @@ internal class DirectPeer(context: Context, private val receive: (String) -> Uni
         // WebRTC must not be disposed on its own callback thread.
         CoroutineScope(Dispatchers.IO).launch { channel?.unregisterObserver(); channel?.close(); peer?.close(); peer?.dispose(); factory.dispose() }
     }
-    companion object { @Volatile private var initialized = false }
+    companion object {
+        const val ICE_FAILED = "当前网络无法穿透，请换用同一 Wi-Fi／热点或服务器模式"
+        const val CHANNEL_CLOSED = "直连已断开，请重新扫描电脑二维码"
+        @Volatile private var initialized = false
+    }
 }

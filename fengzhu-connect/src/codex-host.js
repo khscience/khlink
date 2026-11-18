@@ -124,6 +124,15 @@ async function hostIsAlive(state, timeoutMs = 1000) {
   try { const transport = await connectHost(state, timeoutMs, { probe: true }); transport.close(); return true; } catch { return false; }
 }
 
+// Stop a host and its app-server child: taskkill /T on Windows; elsewhere the
+// host ends its child on SIGTERM.
+function killHostTree(pid) {
+  try {
+    if (process.platform === 'win32') execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 });
+    else process.kill(pid, 'SIGTERM');
+  } catch { /* already gone */ }
+}
+
 function processExists(pid) { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } }
 
 async function ensureCodexHost(config, { probeAttempts = 3 } = {}) {
@@ -136,13 +145,13 @@ async function ensureCodexHost(config, { probeAttempts = 3 } = {}) {
     for (let attempt = 1; attempt < probeAttempts; attempt++) if (await hostIsAlive(existing, 5000 * attempt)) return existing;
     // Still silent: it is ours (the state file says so) and stuck. Stop it, and
     // its app-server, before a fresh one takes the tasks over.
-    try { execFileSync('taskkill', ['/PID', String(existing.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 }); } catch { /* already gone */ }
+    killHostTree(existing.pid);
   }
   // An older host version still answering our token is ours: stop it before
   // starting the new one, or both hold Codex thread-writer locks.
   if (existing?.pid && existing.version !== HOST_VERSION && existing.pid !== process.pid && await hostIsAlive(existing)) {
     // /T: its app-server child too (a plain kill would orphan it on Windows).
-    try { execFileSync('taskkill', ['/PID', String(existing.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 }); } catch { /* already gone */ }
+    killHostTree(existing.pid);
   }
   let exited = false;
   // Under the supervisor, it starts the host: one started from here would end

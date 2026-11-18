@@ -8,7 +8,8 @@
 //    so the turn runs in the desktop's own session — the conversation never
 //    forks. Otherwise the connector resumes the session itself.
 //  * sessions created on the phone are registered in the desktop sidebar.
-//  * the model / effort catalogue is read from the desktop's own Claude Code.
+//  * the model / effort catalogue combines the bundled Claude Code probe with
+//    recent models and effort levels actually observed in desktop sessions.
 //
 // Installed onto Connector.prototype by install().
 const fs = require('node:fs');
@@ -19,13 +20,14 @@ const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { parseDesktopResult, ADAPTER_ERRORS } = require('./claude-desktop-result');
 const { encryptJson } = require('../crypto');
-const { ClaudeDesktopStore, findDesktopClaudeBin, realDesktopPath, probeModels, readTranscript, readTranscriptImage, peekTranscriptState, pendingToolUse, transcriptPath, prettyModelId, START_SESSION_TOOL, OFFER_NEW, OFFER_HERE } = require('./claude-desktop');
+const { ClaudeDesktopStore, findDesktopClaudeBin, realDesktopPath, probeModels, readTranscript, forEachTranscriptChunk, readTranscriptImage, peekTranscriptState, pendingToolUse, transcriptPath, prettyModelId, START_SESSION_TOOL, OFFER_NEW, OFFER_HERE, BRANCH_TOOL, BRANCH_NEW, BRANCH_STAY } = require('./claude-desktop');
 const { readDesktopQueue } = require('./claude-desktop');
 const { reduceQueue } = require('./claude-desktop-queue');
 const { detectImageMime, isImageAttachment } = require('../attachment-store');
 const { desktopPermissionDetail, desktopQuestionDetail } = require('./claude-desktop-prompts');
 const { claudeUsageState: usageFromObservations, officialDesktopUsageState } = require('./claude-usage');
 const { workflowEvents, journalProgress, workflowItem, FINAL_STATUSES: WORKFLOW_FINAL } = require('./claude-workflows');
+const { observedDesktopModels, mergeObservedDesktopModels, mergeClaudeModels } = require('./claude-model-catalog');
 
 const DESKTOP_POLL_MS = 5_000;
 const DESKTOP_PROBE_MS = 60_000;    // looking for a desktop app that is not installed yet
@@ -65,6 +67,7 @@ function promptLabel(tool) {
   if (tool === 'ExitPlanMode') return 'Claude 在等你确认计划';
   if (tool === START_SESSION_TOOL) return 'Claude 想单独开一个新会话';
   if (tool === TRUST_TOOL) return '电脑端在问要不要信任这个工作区';
+  if (tool === BRANCH_TOOL) return 'Claude 在问要不要新建分支';
   return `等你批准：${tool}`;
 }
 // Claude Desktop 2.42304.2 classifies every finished turn (postTurnSummary)
@@ -100,6 +103,7 @@ function claudeWaiting(session, prompt, unseen = true, prior = null, now = Date.
   return { waitingCategory: null, waitingAt: null, waitingText: '' };
 }
 const MODEL_REFRESH_MS = 6 * 60 * 60_000;
+const MODEL_ON_DEMAND_MIN_INTERVAL_MS = 60_000;
 const SEND_SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'claude-desktop-send.ps1');
 const NEW_SEND_SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'claude-desktop-new.ps1');
 // All three assets must exist before starting PowerShell. A missing script or
@@ -263,14 +267,64 @@ const methods = {
     return found;
   },
 
-  async refreshClaudeModels() {
-    const bin = this.currentClaudeBin(); if (!bin || !fs.existsSync(bin)) return this.claudeModels || [];
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CLAUDE|ANTHROPIC)/i.test(key)));
-    try {
-      this.claudeModels = await probeModels(bin, { env });
-      this.claudeModelsAt = Date.now();
-    } catch (error) { this.log(error); }
-    return this.claudeModels || [];
+  async refreshClaudeModels({ onlyIfStale = false } = {}) {
+    if (this._claudeModelRefreshPromise) return this._claudeModelRefreshPromise;
+    const now = Date.now();
+    if (onlyIfStale && this._claudeModelAttemptAt && now - this._claudeModelAttemptAt < MODEL_ON_DEMAND_MIN_INTERVAL_MS) return this.claudeModels || [];
+    this._claudeModelAttemptAt = now;
+    const work = (async () => {
+      const bin = this.currentClaudeBin(); if (!bin || !fs.existsSync(bin)) return this.claudeModels || [];
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CLAUDE|ANTHROPIC)/i.test(key)));
+      try {
+        const models = await (this.probeClaudeModels || probeModels)(bin, { env });
+        // A transient empty response must not erase the last usable catalogue.
+        if (Array.isArray(models) && models.length) {
+          this.claudeModels = models; this.claudeModelsAt = Date.now();
+          this.publishClaudeModelCatalog?.();
+        }
+      } catch (error) { this.log(error); }
+      return this.claudeModels || [];
+    })();
+    this._claudeModelRefreshPromise = work;
+    try { return await work; } finally { if (this._claudeModelRefreshPromise === work) this._claudeModelRefreshPromise = null; }
+  },
+
+  refreshObservedClaudeModels() {
+    const desktop = this.claudeDesktop;
+    if (!desktop?.readSessions) return;
+    if (this.claudeProfileLock?.switching()) {
+      this._claudeObservedModels = []; this._claudeObservedProfile = null; this._claudeObservedRoot = null; this.publishClaudeModelCatalog?.(); return;
+    }
+    const profile = desktop.profileSignature?.(), root = desktop.root;
+    if (profile === 'switching' || profile === 'unavailable') {
+      this._claudeObservedModels = []; this._claudeObservedProfile = null; this._claudeObservedRoot = null; this.publishClaudeModelCatalog?.(); return;
+    }
+    if (this._claudeObservedProfile !== profile || this._claudeObservedRoot !== root) {
+      this._claudeObservedModels = []; this._claudeObservedProfile = profile; this._claudeObservedRoot = root;
+    }
+    // Windows can keep a file's mtime unchanged while its writer is open.
+    // An explicit phone refresh must re-read session metadata rather than
+    // reuse an indefinitely stale mtime-keyed entry.
+    desktop.metaCache?.clear?.();
+    const sessions = desktop.readSessions();
+    // A partial scan can add positive evidence but cannot remove other models;
+    // snapshots from an account switch cannot be used at all.
+    if (this.claudeProfileLock?.switching() || desktop.root !== root || desktop.profileSignature?.() !== profile) {
+      this._claudeObservedModels = []; this._claudeObservedProfile = null; this._claudeObservedRoot = null; this.publishClaudeModelCatalog?.(); return;
+    }
+    this._claudeObservedModels = mergeObservedDesktopModels(this._claudeObservedModels, observedDesktopModels(sessions), desktop.sessionScanComplete !== false);
+    this.publishClaudeModelCatalog?.();
+  },
+
+  publishClaudeModelCatalog() {
+    const models = mergeClaudeModels(this.claudeModels, this._claudeObservedModels);
+    const fingerprint = JSON.stringify(models);
+    if (fingerprint !== this._claudeModelCatalogFingerprint) {
+      this._claudeModelCatalogFingerprint = fingerprint;
+      this._claudeModelCatalogAt = Math.max(Date.now(), (this._claudeModelCatalogAt || 0) + 1);
+      this.emit?.('claude.models', null, { models, snapshotAt: this._claudeModelCatalogAt });
+    }
+    return models;
   },
 
   startClaudeModelRefresh() {
@@ -281,8 +335,8 @@ const methods = {
   },
 
   claudeCapabilities(base) {
-    const models = (this.claudeModels || []).map((model) => ({ value: model.value, label: model.label, description: model.description, efforts: model.efforts }));
-    return { ...base, models, desktopSync: !!this._claudeDesktopTimer, claudeVersion: this.claudeBinVersion || null, usage: this.claudeUsageState() };
+    const models = this.publishClaudeModelCatalog?.() || mergeClaudeModels(this.claudeModels, this._claudeObservedModels);
+    return { ...base, models, modelsSnapshotAt: this._claudeModelCatalogAt || 0, desktopSync: !!this._claudeDesktopTimer, claudeVersion: this.claudeBinVersion || null, usage: this.claudeUsageState() };
   },
 
   // ---- thread index ------------------------------------------------------
@@ -453,9 +507,15 @@ const methods = {
         result = await this.runClaudeTrustScript(['-Action', label === TRUST_YES ? 'trust' : 'cancel', '-ExpectFile', tempFile(String(detail.folder || ''))]);
         if (result.ok) this._claudeTrust = { ...(this._claudeTrust || {}), dialog: null, lookedAt: Date.now() };
       } else {
-        if (![OFFER_NEW, OFFER_HERE].includes(label)) throw new Error('只能选择新会话或在这里做');
-        const args = ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', ANSWER_SCRIPT, '-SessionId', meta.desktopId,
-          '-Kind', 'offer', '-Choice', label === OFFER_NEW ? 'new' : 'here', '-ExpectFile', tempFile(String(detail.title || ''))];
+        let answer;
+        if (detail.source === 'branch-offer') {
+          if (![BRANCH_NEW, BRANCH_STAY].includes(label)) throw new Error('只能选择新建分支或留在当前分支');
+          answer = ['-Kind', 'branch', '-Choice', label === BRANCH_NEW ? 'new' : 'stay', '-ExpectFile', tempFile(String(detail.suggested || ''))];
+        } else {
+          if (![OFFER_NEW, OFFER_HERE].includes(label)) throw new Error('只能选择新会话或在这里做');
+          answer = ['-Kind', 'offer', '-Choice', label === OFFER_NEW ? 'new' : 'here', '-ExpectFile', tempFile(String(detail.title || ''))];
+        }
+        const args = ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', ANSWER_SCRIPT, '-SessionId', meta.desktopId, ...answer];
         const restoreId = this.claudeDesktop.focusedSessionId?.();
         if (restoreId && restoreId !== meta.desktopId) args.push('-RestoreId', restoreId);
         const exec = this.execFileFn || execFile;
@@ -474,7 +534,7 @@ const methods = {
   },
 
   async syncClaudeDesktopSessions() {
-    if (this.claudeProfileLock?.switching()) { this._claudeMissingSessions = new Map(); return; } // Never publish the link-changing gap.
+    if (this.claudeProfileLock?.switching()) { this._claudeMissingSessions = new Map(); this._claudeObservedModels = []; this._claudeObservedProfile = null; this._claudeObservedRoot = null; this.publishClaudeModelCatalog?.(); return; } // Never publish the link-changing gap.
     if (this._claudeDesktopSyncing) return; this._claudeDesktopSyncing = true;
     try {
       // A desktop update/reopen can move its data while the connector stays
@@ -485,15 +545,21 @@ const methods = {
         this.useDesktopClaudeBinary?.();
       }
       const profile = this.claudeDesktop.profileSignature?.();
-      if (profile === 'switching' || profile === 'unavailable') { this._claudeMissingSessions = new Map(); return; }
+      if (profile === 'switching' || profile === 'unavailable') { this._claudeMissingSessions = new Map(); this._claudeObservedModels = []; this._claudeObservedProfile = null; this._claudeObservedRoot = null; this.publishClaudeModelCatalog?.(); return; }
       const sourceRoot = this.claudeDesktop.root;
       const sameProfile = () => !this.claudeProfileLock?.switching() && this.claudeDesktop.profileSignature?.() === profile &&
         this.claudeDesktop.root === sourceRoot && this.claudeDesktop.available?.() !== false;
       if (profile !== this._claudeScannedProfile) {
         this.claudeDesktop.resetProfileCaches?.(); this._claudeLive = null;
+        this._claudeObservedModels = [];
+        this._claudeObservedProfile = profile; this._claudeObservedRoot = sourceRoot;
         this._claudeScannedProfile = profile;
       }
       const sessions = this.claudeDesktop.listSessions();
+      if (sameProfile()) {
+        this._claudeObservedModels = mergeObservedDesktopModels(this._claudeObservedModels, observedDesktopModels(sessions), this.claudeDesktop.sessionScanComplete !== false);
+        this.publishClaudeModelCatalog?.();
+      }
       const prompts = this.claudeDesktop.pendingPrompts?.(Date.now()) || new Map();
       // Claude Desktop 3.x waits on two things the permission log never lists:
       // a suggested side session's card, and the workspace trust dialog.
@@ -846,21 +912,19 @@ const methods = {
     let offset = meta.workflowScanOffset || 0; let lineCount = meta.workflowScanLines || 0;
     if (meta.workflowScanFile !== file || size < offset) { offset = 0; lineCount = 0; }
     if (size === offset) return;
-    const handle = await fs.promises.open(file, 'r');
-    let text;
-    try { const buffer = Buffer.alloc(size - offset); await handle.read(buffer, 0, buffer.length, offset); text = buffer.toString('utf8'); }
-    finally { await handle.close(); }
-    const end = text.lastIndexOf('\n'); if (end < 0) return;
-    const lines = text.slice(0, end).split('\n');
-    const { launches, notifications } = workflowEvents(lines, lineCount);
+    // In chunks, and a first scan of a huge transcript from its tail (see
+    // forEachTranscriptChunk): a whole 1 GB file failed to read every minute.
     const workflows = { ...(meta.workflows || {}) };
-    for (const launch of launches) if (!workflows[launch.taskId]) workflows[launch.taskId] = { ...launch, status: 'running' };
-    for (const notice of notifications) {
-      const workflow = workflows[notice.taskId];
-      if (workflow && !WORKFLOW_FINAL.has(workflow.status)) Object.assign(workflow, { status: notice.status, endedAt: notice.at });
-    }
-    this.setClaudeThreadFields(threadId, { workflows, workflowScanFile: file,
-      workflowScanOffset: offset + Buffer.byteLength(text.slice(0, end + 1)), workflowScanLines: lineCount + lines.length });
+    const read = forEachTranscriptChunk(file, offset, lineCount, (lines, first) => {
+      const { launches, notifications } = workflowEvents(lines, first);
+      for (const launch of launches) if (!workflows[launch.taskId]) workflows[launch.taskId] = { ...launch, status: 'running' };
+      for (const notice of notifications) {
+        const workflow = workflows[notice.taskId];
+        if (workflow && !WORKFLOW_FINAL.has(workflow.status)) Object.assign(workflow, { status: notice.status, endedAt: notice.at });
+      }
+    });
+    if (!read || read.offset === offset) return;
+    this.setClaudeThreadFields(threadId, { workflows, workflowScanFile: file, workflowScanOffset: read.offset, workflowScanLines: read.lineCount });
     this.saveClaudeThreads();
   },
 
@@ -1218,7 +1282,7 @@ const methods = {
       }
       const restoreId = this.claudeDesktop.focusedSessionId();
       const result = await this.runDesktopSend(meta.desktopId, text, restoreId && restoreId !== meta.desktopId ? restoreId : '', { imagePaths });
-      if (!result.ok) this.log(`Claude desktop send failed: reason=${desktopReasonCode(result.reason)} delivery=${result.delivery || 'unknown'}`);
+      if (!result.ok) this.log(`Claude desktop send failed: session=${String(meta.desktopId).slice(6, 14)} reason=${desktopReasonCode(result.reason)} delivery=${result.delivery || 'unknown'}`);
       if (!result.ok) throw Object.assign(new Error(DESKTOP_SEND_ERRORS[result.reason] || `发送到电脑端失败：${result.reason}`), {
         delivery: result.delivery === 'not_sent' || ['desktop_draft_present', 'composer_not_found', 'session_not_shown', 'paste_failed', 'window_not_foreground', 'image_needs_foreground', 'image_missing'].includes(result.reason) ? 'not_sent' : 'uncertain',
       });
@@ -1480,7 +1544,7 @@ const methods = {
     const meta = this.claudeThreads.get(threadId);
     const detail = meta?.waitingDetail;
     if (!meta?.desktopId || !detail || !requestId || detail.requestId !== requestId) throw new Error('这个提示已经处理过或已经变了，请刷新后再看。');
-    if (detail.source === 'session-offer' || detail.source === 'workspace-trust') return this.answerClaudeDesktopCard(threadId, meta, detail, { choice, choices, answers });
+    if (['session-offer', 'workspace-trust', 'branch-offer'].includes(detail.source)) return this.answerClaudeDesktopCard(threadId, meta, detail, { choice, choices, answers });
     const pending = this.claudeDesktop?.pendingPrompts?.(Date.now());
     const logRequestId = detail.source === 'desktop-ui' ? detail.logRequestId : requestId;
     if (pending && pending.get(meta.desktopId)?.requestId !== logRequestId) throw new Error('这个提示已经处理过了。');

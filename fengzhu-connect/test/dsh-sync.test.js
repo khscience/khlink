@@ -238,6 +238,8 @@ test('DSH settings return the permission catalog and switch a permission preset'
   });
   const read = await methods.dshCommand.call(ctx, { action: 'thread.settings.read', args: { threadId: 'dsh-session-settings' } });
   assert.equal(read.settings.permissionMode, 'workspace-write');
+  // Also at the top level: the phone reads a command result's settings there.
+  assert.equal(read.permissionMode, 'workspace-write');
   assert.deepEqual(read.permissionCatalog.options.map((option) => option.value), ['read-only', 'workspace-write']);
   const saved = await methods.dshCommand.call(ctx, { action: 'settings.set', args: {
     threadId: 'dsh-session-settings', model: 'magpie/workbuddy', effort: 'max', permissionMode: 'read-only',
@@ -323,4 +325,22 @@ test('a new DSH session gets the Windows form of its folder, so the desktop list
   assert.equal(normalizeDshCwd('I:\x5ctmp\x5ckhlink-test\x5c'), 'I:\x5ctmp\x5ckhlink-test');
   assert.equal(normalizeDshCwd('I:/'), 'I:\x5c');
   assert.equal(normalizeDshCwd(''), '');
+});
+
+test('DSH window automation runs on Windows PowerShell, which every Windows has', async () => {
+  // A user without PowerShell 7 tapped 允许一次 and got "spawn pwsh ENOENT" (2026-11-14).
+  const saved = process.env.DSH_PWSH; delete process.env.DSH_PWSH;
+  const calls = [];
+  const ctx = { dshExecFile: async (file, args) => { calls.push({ file, args }); return { stdout: 'noise\n{"ok":true,"clicked":"允许一次"}\n', stderr: '' }; } };
+  try {
+    const result = await methods.runDshUia.call(ctx, 'answer', { title: '安装 Hermes AI 助手' }, '允许一次');
+    assert.deepEqual(result, { ok: true, clicked: '允许一次' });
+    assert.equal(calls[0].file, 'powershell.exe');
+    assert.ok(calls[0].args.includes('-STA'));
+    assert.deepEqual(calls[0].args.slice(calls[0].args.indexOf('-Option'), calls[0].args.indexOf('-Option') + 2), ['-Option', '允许一次']);
+  } finally { if (saved !== undefined) process.env.DSH_PWSH = saved; }
+  // Windows PowerShell reads a file without a BOM as the ANSI code page, which
+  // would garble the Chinese button names the script looks for.
+  const script = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'dsh-answer.ps1'));
+  assert.deepEqual([...script.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
 });

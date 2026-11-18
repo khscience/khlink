@@ -11,6 +11,19 @@ function isCodexQuestionReply(text) {
   } catch { return false; }
 }
 
+// Codex Desktop's rich-text composer can serialize an XML-looking answer as
+// Markdown: it escapes the opening '<', backslashes inside JSON, and line
+// breaks. Only decode a complete, valid answer envelope; ordinary user text
+// and examples must stay byte-for-byte unchanged.
+function normalizeDesktopQuestionReply(text) {
+  const original = String(text || '');
+  const trimmed = original.trim();
+  if (!trimmed.startsWith('\\<send_user_message_question_reply>') ||
+      !trimmed.endsWith('\\</send_user_message_question_reply>')) return original;
+  const decoded = trimmed.replace(/\\([\\<\r\n])/g, '$1');
+  return isCodexQuestionReply(decoded) ? decoded : original;
+}
+
 function questionEvent(record) {
   const p = record?.payload || {}, at = Date.parse(record?.timestamp || '') || 0;
   if (!at) return null;
@@ -30,7 +43,10 @@ function questionEvent(record) {
   }
   const user = record.type === 'event_msg' && p.type === 'user_message' || record.type === 'response_item' && p.type === 'message' && p.role === 'user';
   if (!user) return null;
-  const text = String(p.message ?? p.text ?? (Array.isArray(p.content) ? p.content.map(c => c.text || '').join('\n') : p.content || ''));
+  // This is a record of a user message already accepted into the rollout,
+  // not merely a local send attempt. Decode the complete matching envelope
+  // so the phone does not keep asking after that answer reached the model.
+  const text = normalizeDesktopQuestionReply(String(p.message ?? p.text ?? (Array.isArray(p.content) ? p.content.map(c => c.text || '').join('\n') : p.content || '')));
   const ids = [];
   for (const match of text.matchAll(/<send_user_message_question_reply>\s*([\s\S]*?)\s*<\/send_user_message_question_reply>/g)) {
     try { const values = JSON.parse(match[1]); if (Array.isArray(values)) for (const row of values) {
@@ -89,4 +105,4 @@ class CodexQuestionTracker {
       updatedAt: state.updatedAt, turnId: state.turnId };
   }
 }
-module.exports = { CodexQuestionTracker, questionEvent, isCodexQuestionReply };
+module.exports = { CodexQuestionTracker, questionEvent, isCodexQuestionReply, normalizeDesktopQuestionReply };

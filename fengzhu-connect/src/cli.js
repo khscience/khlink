@@ -41,6 +41,16 @@ async function main() {
     console.error('[fengzhu-connect] start did not finish within 3 minutes; exiting so a fresh one is started');
     process.exit(1);
   }, 180_000) : null;
+  // Used by scripts/khlink-macos.sh update: fetch, verify and unpack a newer
+  // connector; the script swaps it in and restarts. Prints one JSON line.
+  if (command === 'update-stage') {
+    const { stageUpdate } = require('./self-update');
+    const appDir = path.resolve(arg('app', path.join(__dirname, '..')));
+    const result = await stageUpdate({ appDir, workDir: path.resolve(arg('work', path.join(appDir, '..', 'update'))),
+      statusFile: path.join(path.dirname(file), 'status.json'), force: process.argv.includes('--force') });
+    console.log(JSON.stringify(result));
+    return;
+  }
   await ready();
   if (command === 'setup') {
     const password = process.env.FENGZHU_BRIDGE_PASSWORD;
@@ -48,8 +58,28 @@ async function main() {
     const serverUrl = arg('server', DEFAULT_SERVER_URL);
     if (!serverUrl) throw new Error('Pass --server <relay URL> for setup');
     const config = saveConfig({ serverUrl, deviceId: crypto.randomUUID(),
-      deviceName: arg('name', os.hostname()), workspace: arg('workspace', process.env.USERPROFILE), codexBin: arg('codex-bin'), accountKey: '' });
+      deviceName: arg('name', os.hostname()), workspace: arg('workspace', process.env.USERPROFILE || os.homedir()), codexBin: arg('codex-bin'), accountKey: '' });
     await new BridgeApi(config).setup(password); console.log(`Configured ${file}`); return;
+  }
+  // Account login without the desktop app (macOS/Linux): browser OAuth, shared
+  // account key from a running computer, then this computer's connector config.
+  if (command === 'login') {
+    const { loginAccount } = require('./account-login');
+    const { protect, unprotect } = require('./config');
+    const noBrowser = process.argv.includes('--no-browser');
+    const openUrl = noBrowser ? null : (url) => {
+      const { spawn } = require('node:child_process');
+      const opener = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['explorer.exe', [url]] : ['xdg-open', [url]];
+      spawn(opener[0], opener[1], { detached: true, stdio: 'ignore' }).unref();
+    };
+    let previous = null; try { previous = JSON.parse(require('node:fs').readFileSync(file, 'utf8')); } catch { /* first login */ }
+    const result = await loginAccount({
+      serverUrl: arg('server', DEFAULT_SERVER_URL), deviceName: arg('name', os.hostname()),
+      workspace: arg('workspace', previous?.workspace || os.homedir()), codexBin: arg('codex-bin', previous?.codexBin || null),
+      clientVersion: CONNECTOR_VERSION, protect, unprotect, saveConfig, dataDir: path.dirname(file), openUrl,
+    });
+    console.log(`khLink 连接器已配置：${result.configFile}`);
+    return;
   }
   const config = loadConfig();
   if (command === 'mcp-install') {

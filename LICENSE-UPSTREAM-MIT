@@ -1,0 +1,36 @@
+上游代码的 MIT 协议声明 / MIT notice for upstream code
+
+khLink 最初基于 Linco Talk 的 linco-bridge（https://github.com/lincotalk/linco-bridge），
+于 2026-08-21 以提交 88bcb9e 引入本仓库。该提交中来自上游的代码，以及其中未经
+khscience 修改的部分（主要在 linco-bridge-connect/、linco-bridge-platform/、
+desktop-adapter/ 目录），仍按下面的 MIT 协议授权。khscience 之后的修改和新增代码
+按仓库根目录 LICENSE 中的 PolyForm Noncommercial License 1.0.0 授权。
+
+The code imported from upstream linco-bridge in commit 88bcb9e, and the parts of it
+not modified by khscience, remain under the MIT License below. Later changes and new
+code by khscience are licensed under the PolyForm Noncommercial License 1.0.0 in LICENSE.
+
+----
+
+MIT License
+
+Copyright (c) 2026 Linco Talk Contributors
+Copyright (c) 2026 khscience
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

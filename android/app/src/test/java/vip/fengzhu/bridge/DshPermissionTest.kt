@@ -29,4 +29,18 @@ class DshPermissionTest {
         assertEquals(emptyList<DshPermissionOption>(), parsed!!.permissions)
         assertEquals(null, parsed.defaultPermission)
     }
+
+    @Test
+    fun antigravityCatalogAndLabel() {
+        val catalog = JSONObject(
+            """{"groups":[{"id":"antigravity","name":"反重力","models":[{"id":"Gemini 3.8 Flash","name":"Gemini 3.8 Flash","reasoning":{"efforts":[{"id":"Low","name":"低"},{"id":"Medium","name":"中"},{"id":"High","name":"高"}],"defaultEffort":"High"}},{"id":"Claude Sonnet 4.6 (Thinking)","name":"Claude Sonnet 4.6 (Thinking)"}]}],"default":{"provider":"antigravity","model":"Gemini 3.8 Flash"}}""",
+        )
+        val permissions = JSONObject("""{"options":[{"value":"Request Review","name":"逐条审批"},{"value":"Auto","name":"自动"},{"value":"Turbo","name":"全自动"}],"defaultPreset":"Auto"}""")
+        val parsed = parseDshCatalog(catalog, permissions)!!
+        assertEquals("antigravity/Gemini 3.8 Flash", parsed.defaultKey)
+        assertEquals(listOf("低", "中", "高"), parsed.model("antigravity/Gemini 3.8 Flash")!!.efforts.map { it.name })
+        assertEquals("全自动", parsed.permissions.last().name)
+        assertEquals("Gemini 3.8 Flash 高", antigravityModelLabel(ThreadSettings(model = "antigravity/Gemini 3.8 Flash", effort = "High"), ""))
+        assertEquals("Claude Sonnet 4.6 (Thinking)", antigravityModelLabel(ThreadSettings(model = "antigravity/Claude Sonnet 4.6 (Thinking)", effort = ""), ""))
+    }
 }

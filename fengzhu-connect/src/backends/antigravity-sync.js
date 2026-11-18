@@ -60,7 +60,51 @@ const SEND_ERRORS = {
   submit_unavailable: '反重力的提交按钮当前不可用，请在电脑上回答。',
   bad_answer: '回答内容不完整。',
   empty_message: '消息是空的。',
+  no_settings: '反重力里没找到模型和权限的选择按钮。',
+  bad_settings: '没有要切换的模型或权限。',
+  model_not_set: '反重力没能切换到这个模型（可能当前不可用），请在电脑上选择。',
+  level_not_set: '反重力没能切换到这个思考强度，请在电脑上选择。',
+  permission_not_set: '反重力没能切换到这个权限模式，请在电脑上选择。',
 };
+
+// Antigravity's permission presets (this conversation only), in its own order.
+const PRESETS = [
+  { value: 'Request Review', name: '逐条审批', description: '每条命令都要你批准' },
+  { value: 'Default', name: '默认', description: '敏感操作前先问你' },
+  { value: 'Auto', name: '自动', description: '由反重力判断命令能否直接执行' },
+  { value: 'Turbo', name: '全自动', description: '所有命令直接执行，不做限制' },
+];
+const LEVEL_NAMES = { Minimal: '最低', Low: '低', Medium: '中', High: '高', Max: '最高' };
+
+/** Splits a selector label such as "Gemini 3.8 Flash High" into a listed model and its thinking level. */
+function antigravityModelOf(models, label) {
+  const text = String(label || '').trim();
+  for (const model of models || []) {
+    if (text === model.name) return { model: model.name, effort: model.level || '' };
+    if (model.levels?.length && text.startsWith(`${model.name} `)) {
+      const level = text.slice(model.name.length + 1);
+      if (model.levels.includes(level)) return { model: model.name, effort: level };
+    }
+  }
+  return { model: text, effort: '' };
+}
+
+/** The script's menus in the catalogue shape the phone already reads for DeepSeek and Hermes. */
+function antigravityCatalog(read) {
+  const models = (read.models || []).filter((model) => model.available !== false && model.name).map((model) => ({
+    id: model.name,
+    name: model.name,
+    ...(model.levels?.length ? { reasoning: { efforts: model.levels.map((level) => ({ id: level, name: LEVEL_NAMES[level] || level })), defaultEffort: model.level || '' } } : {}),
+  }));
+  const current = antigravityModelOf(read.models, read.model);
+  const listed = new Set((read.permissions || []).map((option) => option.name));
+  const fallback = (read.permissions || []).find((option) => option.isDefault)?.name;
+  return {
+    catalog: models.length ? { groups: [{ id: 'antigravity', name: '反重力', models }], default: current.model ? { provider: 'antigravity', model: current.model } : null } : null,
+    permissionCatalog: { options: PRESETS.filter((preset) => !listed.size || listed.has(preset.value)), ...(fallback ? { defaultPreset: fallback } : {}) },
+    settings: { model: current.model ? `antigravity/${current.model}` : '', effort: current.effort, permissionMode: read.permission || '' },
+  };
+}
 
 const methods = {
   startAntigravitySync() {
@@ -525,9 +569,51 @@ const methods = {
         setTimeout(() => this.pollAntigravity().catch((error) => this.log(error)), 1_500).unref?.();
         return { stopped: true, backend: 'antigravity' };
       }
+      // Reading the model and permission means opening the conversation in
+      // Antigravity's window, so that happens only when the phone asks for a
+      // fresh read (its settings dialog); opening a conversation gets the last one.
+      case 'settings.get':
+      case 'thread.settings.read': {
+        if (!meta) throw new Error('没有找到这个反重力对话');
+        if (args.refresh) {
+          const read = await this.runAntigravitySend(threadId, 'settings');
+          if (!read.ok) throw new Error(SEND_ERRORS[read.reason] || `读取反重力设置失败：${read.reason}`);
+          const shaped = antigravityCatalog(read);
+          if (shaped.catalog) this.antigravityCatalogCache = { catalog: shaped.catalog, permissionCatalog: shaped.permissionCatalog };
+          meta.settings = { ...shaped.settings, at: Date.now() };
+          this.saveAntigravityThreads();
+        }
+        const cached = this.antigravityCatalogCache || {};
+        const saved = meta.settings || {};
+        const settings = { model: saved.model || '', effort: saved.effort || '', permissionMode: saved.permissionMode || '' };
+        // The phone reads a command result's settings from its top level
+        // (the thread.settings event nests them); give both.
+        return { backend: 'antigravity', ...settings, settings, catalog: cached.catalog || null, permissionCatalog: cached.permissionCatalog || null, updatedAt: saved.at || 0 };
+      }
+      case 'settings.set': {
+        if (!meta) throw new Error('没有找到这个反重力对话');
+        const settings = args.settings || args;
+        const key = String(settings.model || '').trim();
+        const model = key.startsWith('antigravity/') ? key.slice('antigravity/'.length) : '';
+        const level = String(settings.effort || '').trim();
+        const permission = String(settings.permissionMode || '').trim();
+        if (permission && !PRESETS.some((preset) => preset.value === permission)) throw new Error('反重力没有这个权限模式');
+        if (!model && !permission) throw new Error(SEND_ERRORS.bad_settings);
+        const result = await this.runAntigravitySend(threadId, 'set', JSON.stringify({ ...(model ? { model, level } : {}), ...(permission ? { permission } : {}) }));
+        if (!result.ok) throw new Error(SEND_ERRORS[result.reason] || `反重力设置失败：${result.reason}`);
+        const known = this.antigravityCatalogCache?.catalog?.groups?.[0]?.models?.map((row) => ({ name: row.id, levels: row.reasoning?.efforts?.map((effort) => effort.id) })) || [];
+        const current = antigravityModelOf(known, result.model);
+        meta.settings = { model: current.model ? `antigravity/${current.model}` : '', effort: current.effort, permissionMode: result.permission || '', at: Date.now() };
+        this.saveAntigravityThreads();
+        const now = { model: meta.settings.model, effort: meta.settings.effort, permissionMode: meta.settings.permissionMode };
+        this.emit('thread.settings', threadId, { threadId, settings: now, updatedAt: meta.settings.at, source: 'antigravity' });
+        const permissionName = PRESETS.find((preset) => preset.value === now.permissionMode)?.name;
+        const label = [current.model && `${current.model}${current.effort ? ` ${LEVEL_NAMES[current.effort] || current.effort}` : ''}`, permissionName].filter(Boolean).join(' · ');
+        return { saved: true, backend: 'antigravity', ...now, reason: `反重力已切换，下一条消息起生效${label ? `：${label}` : ''}` };
+      }
       default:
-        // Renames and settings remain in the desktop app.
-        if (/^(followup\.|thread\.(rename|archive|compact|fork|rollback|resume)|settings\.set|approval)/.test(payload.action || '')) throw new Error(ANTIGRAVITY_ACTIONS_UNSUPPORTED);
+        // Renames stay in the desktop app.
+        if (/^(followup\.|thread\.(rename|archive|compact|fork|rollback|resume)|approval)/.test(payload.action || '')) throw new Error(ANTIGRAVITY_ACTIONS_UNSUPPORTED);
         return { backend: 'antigravity', readOnly: true };
     }
   },
@@ -535,4 +621,4 @@ const methods = {
 
 function install(Connector) { Object.assign(Connector.prototype, methods); }
 
-module.exports = { install, methods, ANTIGRAVITY_ACTIONS_UNSUPPORTED };
+module.exports = { install, methods, ANTIGRAVITY_ACTIONS_UNSUPPORTED, antigravityCatalog, antigravityModelOf };

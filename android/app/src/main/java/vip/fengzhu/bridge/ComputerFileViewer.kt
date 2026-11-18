@@ -1,6 +1,7 @@
 package vip.fengzhu.bridge
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -49,6 +51,7 @@ import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -61,6 +64,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -84,6 +88,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -116,28 +121,76 @@ internal fun ComputerFileViewer(vm: BridgeViewModel) {
     val current = view ?: return
     val saving by vm.savingFile.collectAsState()
     val kind = remember(current.file) { computerFileKind(current.file.name) }
+    val context = LocalContext.current
+    val readerPrefs = remember(context) { context.getSharedPreferences("markdown-reader", Context.MODE_PRIVATE) }
+    var readerTheme by remember { mutableStateOf(MarkdownReaderTheme.fromId(readerPrefs.getString("theme", null))) }
+    var themePicker by remember { mutableStateOf(false) }
+    val readerStyle = markdownReaderStyle(readerTheme)
+    val images = if (kind == ComputerFileKind.MARKDOWN) remember(current.file, current.path, current.threadId, readerTheme == MarkdownReaderTheme.NIGHT) {
+        MarkdownDocumentImageTransformer(context, vm, current, readerTheme == MarkdownReaderTheme.NIGHT)
+    } else null
     var source by rememberSaveable(current.path) { mutableStateOf(false) }
-    val content by produceState<ViewerText?>(null, current.file) {
-        value = if (kind == ComputerFileKind.MARKDOWN || kind == ComputerFileKind.HTML || kind == ComputerFileKind.TEXT) {
-            withContext(Dispatchers.IO) { readViewerText(current.file) }
-        } else null
+    var actionsExpanded by remember(current.path) { mutableStateOf(false) }
+    val content by androidx.compose.runtime.key(current.file) {
+        produceState<ViewerText?>(null, current.file) {
+            value = if (kind == ComputerFileKind.MARKDOWN || kind == ComputerFileKind.HTML || kind == ComputerFileKind.TEXT) {
+                withContext(Dispatchers.IO) { readViewerText(current.file) }
+            } else null
+        }
+    }
+    val preparedMarkdown by androidx.compose.runtime.key(current.file, content) {
+        produceState<String?>(null, content, kind) {
+            val original = content
+            value = if (kind == ComputerFileKind.MARKDOWN && original != null) withContext(Dispatchers.Default) {
+                runCatching { normalizeMarkdownDocumentImages(original.text) }.getOrDefault(original.text)
+            } else null
+        }
     }
     Dialog(onDismissRequest = vm::closeComputerFileView, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Surface(Modifier.fillMaxSize(), color = ViewerPalette.paper) {
             Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(38.dp).background(ViewerPalette.accent.copy(alpha = 0.10f), RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+                        Icon(when (kind) { ComputerFileKind.IMAGE -> Icons.Default.Image; ComputerFileKind.VIDEO -> Icons.Default.Movie; ComputerFileKind.AUDIO -> Icons.Default.AudioFile; else -> Icons.Default.Description }, null, Modifier.size(20.dp), tint = ViewerPalette.accent)
+                    }
+                    Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         Text(current.file.name, color = ViewerPalette.ink, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(current.path, color = ViewerPalette.muted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("手机上的副本 · ${imageSizeLabel(current.file.length())}", color = ViewerPalette.muted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
                     }
                     IconButton({ vm.saveToDownloads(current.file) }, enabled = !saving) {
                         if (saving) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = ViewerPalette.accent)
                         else Icon(Icons.Default.Download, "保存到手机", tint = ViewerPalette.ink)
                     }
-                    IconButton({ vm.openWithOtherApp(current.file) }) { Icon(Icons.Default.OpenInNew, "用其他应用打开", tint = ViewerPalette.ink) }
+                    Box {
+                        IconButton({ actionsExpanded = true }) { Icon(Icons.Default.MoreVert, "更多文件操作", tint = ViewerPalette.ink) }
+                        DropdownMenu(expanded = actionsExpanded, onDismissRequest = { actionsExpanded = false }) {
+                            DropdownMenuItem(text = { Text("重新从电脑取回") }, leadingIcon = { Icon(Icons.Default.Refresh, null) }, onClick = {
+                                actionsExpanded = false
+                                vm.closeComputerFileView()
+                                vm.openComputerFile(current.path, current.threadId, force = true)
+                            })
+                            DropdownMenuItem(text = { Text("用其他应用打开") }, leadingIcon = { Icon(Icons.Default.OpenInNew, null) }, onClick = {
+                                actionsExpanded = false
+                                vm.openWithOtherApp(current.file)
+                            })
+                        }
+                    }
                     IconButton(vm::closeComputerFileView) { Icon(Icons.Default.Close, "关闭", tint = ViewerPalette.ink) }
                 }
-                if (kind == ComputerFileKind.MARKDOWN || kind == ComputerFileKind.HTML) {
+                if (kind == ComputerFileKind.MARKDOWN) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
+                            SegmentedButton(!source, { source = false }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("预览") }
+                            SegmentedButton(source, { source = true }, SegmentedButtonDefaults.itemShape(1, 2)) { Text("源码") }
+                        }
+                        TextButton(onClick = { themePicker = true }, enabled = !source) {
+                            Icon(Icons.Default.Palette, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("主题")
+                        }
+                    }
+                } else if (kind == ComputerFileKind.HTML) {
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                         SegmentedButton(!source, { source = false }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("预览") }
                         SegmentedButton(source, { source = true }, SegmentedButtonDefaults.itemShape(1, 2)) { Text("源码") }
@@ -151,11 +204,19 @@ internal fun ComputerFileViewer(vm: BridgeViewModel) {
                         kind == ComputerFileKind.IMAGE && current.file.extension.equals("svg", true) -> SvgBody(current.file, saving, { vm.saveToDownloads(current.file) }, { vm.openWithOtherApp(current.file) })
                         kind == ComputerFileKind.IMAGE -> ImageBody(current.file, saving, { vm.saveToDownloads(current.file) }, { vm.openWithOtherApp(current.file) })
                         kind == ComputerFileKind.VIDEO -> VideoBody(current.file, saving, { vm.saveToDownloads(current.file) }, { vm.openWithOtherApp(current.file) })
+                        kind == ComputerFileKind.AUDIO -> AudioBody(current.file, saving, { vm.saveToDownloads(current.file) }, { vm.openWithOtherApp(current.file) })
+                        kind == ComputerFileKind.PDF -> PdfBody(current.file, saving, { vm.saveToDownloads(current.file) }, { vm.openWithOtherApp(current.file) })
                         text == null -> CircularProgressIndicator(Modifier.align(Alignment.Center), color = ViewerPalette.accent)
                         source || kind == ComputerFileKind.TEXT -> SourceBody(text)
-                        kind == ComputerFileKind.MARKDOWN -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-                            if (text.truncated) TruncatedNote()
-                            SelectionContainer { KhLinkMarkdown(text.text) }
+                        kind == ComputerFileKind.MARKDOWN && images != null -> Surface(Modifier.fillMaxSize(), color = readerStyle.paper) {
+                            Column(Modifier.fillMaxSize()) {
+                                if (text.truncated) Box(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) { TruncatedNote(readerStyle.muted) }
+                                Box(Modifier.weight(1f).fillMaxWidth()) {
+                                    val markdown = preparedMarkdown
+                                    if (markdown == null) CircularProgressIndicator(Modifier.align(Alignment.Center), color = readerStyle.accent)
+                                    else SelectionContainer { KhLinkMarkdown(markdown, modifier = Modifier.fillMaxSize(), reader = MarkdownReaderConfig(current, vm, readerStyle, images)) }
+                                }
+                            }
                         }
                         else -> HtmlBody(text.text)
                     }
@@ -163,6 +224,38 @@ internal fun ComputerFileViewer(vm: BridgeViewModel) {
             }
         }
     }
+    if (themePicker) AlertDialog(
+        onDismissRequest = { themePicker = false },
+        title = { Text("Markdown 阅读主题") },
+        text = {
+            Column {
+                MarkdownReaderTheme.entries.forEach { option ->
+                    val colors = markdownReaderStyle(option)
+                    Row(
+                        Modifier.fillMaxWidth().clickable {
+                            readerTheme = option
+                            readerPrefs.edit().putString("theme", option.name).apply()
+                        }.padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.size(32.dp).background(colors.paper, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+                            Text("文", color = colors.ink, fontFamily = colors.font, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(option.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                            Text(option.description, color = ViewerPalette.muted, style = MaterialTheme.typography.bodySmall)
+                        }
+                        RadioButton(selected = readerTheme == option, onClick = {
+                            readerTheme = option
+                            readerPrefs.edit().putString("theme", option.name).apply()
+                        })
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { themePicker = false }) { Text("完成") } },
+    )
 }
 
 private fun readViewerText(file: File): ViewerText {
@@ -174,8 +267,8 @@ private fun readViewerText(file: File): ViewerText {
 }
 
 @Composable
-private fun TruncatedNote() {
-    Text("文件较大，这里只显示前 2 MB；完整内容可以保存到手机后查看。", color = ViewerPalette.muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp))
+private fun TruncatedNote(color: Color = ViewerPalette.muted) {
+    Text("文件较大，这里只显示前 2 MB；完整内容可以保存到手机后查看。", color = color, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp))
 }
 
 @Composable
@@ -336,9 +429,9 @@ internal fun VideoBody(file: File, saving: Boolean, save: () -> Unit, openElsewh
 }
 
 @Composable
-private fun MediaErrorBody(file: File, message: String, saving: Boolean, save: () -> Unit, openElsewhere: () -> Unit) {
+internal fun MediaErrorBody(file: File, message: String, saving: Boolean, save: () -> Unit, openElsewhere: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(if (computerFileKind(file.name) == ComputerFileKind.VIDEO) Icons.Default.Movie else Icons.Default.Image, null, Modifier.size(48.dp), tint = ViewerPalette.muted)
+        Icon(when (computerFileKind(file.name)) { ComputerFileKind.VIDEO -> Icons.Default.Movie; ComputerFileKind.AUDIO -> Icons.Default.AudioFile; ComputerFileKind.PDF -> Icons.Default.Description; else -> Icons.Default.Image }, null, Modifier.size(48.dp), tint = ViewerPalette.muted)
         Spacer(Modifier.height(12.dp))
         Text(file.name, color = ViewerPalette.ink, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Text(imageSizeLabel(file.length()), color = ViewerPalette.muted, style = MaterialTheme.typography.bodySmall)
@@ -481,7 +574,7 @@ private fun FetchedFileRow(item: FetchedFile, vm: BridgeViewModel) {
             DropdownMenu(menu, { menu = false }) {
                 DropdownMenuItem({ Text("保存到手机") }, { menu = false; vm.saveToDownloads(item.file) }, leadingIcon = { Icon(Icons.Default.Download, null) })
                 DropdownMenuItem({ Text("用其他应用打开") }, { menu = false; vm.openWithOtherApp(item.file) }, leadingIcon = { Icon(Icons.Default.OpenInNew, null) })
-                DropdownMenuItem({ Text("重新从电脑取回") }, { menu = false; vm.openComputerFile(item.path) }, leadingIcon = { Icon(Icons.Default.Refresh, null) })
+                DropdownMenuItem({ Text("重新从电脑取回") }, { menu = false; vm.openComputerFile(item.path, item.threadId, force = true) }, leadingIcon = { Icon(Icons.Default.Refresh, null) })
                 DropdownMenuItem({ Text("删除", color = ViewerPalette.danger) }, { menu = false; vm.deleteFetchedFile(item) }, leadingIcon = { Icon(Icons.Default.Delete, null, tint = ViewerPalette.danger) })
             }
         }

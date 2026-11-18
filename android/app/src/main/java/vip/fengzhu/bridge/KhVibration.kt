@@ -29,6 +29,7 @@ object KhVibration {
     }
 
     fun started(context: Context, appVisible: Boolean) = play(context, GentleCue.Started, notification = !appVisible)
+    fun stopped(context: Context, appVisible: Boolean) = play(context, GentleCue.Confirm, notification = !appVisible)
 
     @Synchronized
     private fun play(context: Context, cue: GentleCue, notification: Boolean) {

@@ -2,17 +2,17 @@ package vip.fengzhu.bridge
 
 /** Single source for the Android user-facing legal copy and consent version. */
 internal object LegalCopy {
-    const val VERSION = "kh-link-legal-v7"
+    const val VERSION = "kh-link-legal-v8"
     /**
-     * Earlier versions whose consent still stands: v7 only removed the fees
-     * (khLink became free on 2026-11-06), adding no data or third party, so a
-     * v6 consent is not asked again.
+     * v8 only makes the existing account-dependent traffic authorization
+     * wording generic. It changes neither the entitlement nor data handling.
+     * v7 only removed fees. Neither requires v6/v7 users to consent again.
      */
-    val STILL_ACCEPTED = setOf("kh-link-legal-v6")
+    val STILL_ACCEPTED = setOf("kh-link-legal-v6", "kh-link-legal-v7")
 
     val agreement = """
         khLink 用户协议
-        生效日期：2026-11-07 · 版本：$VERSION
+        生效日期：2026-11-08 · 版本：$VERSION
         运营者：看海（个人开发者）
         联系邮箱：hhsci558@gmail.com（也可以用应用内“隐私、协议与支持”入口）
 
@@ -42,7 +42,7 @@ internal object LegalCopy {
 
         五、免费服务、流量与第三方
         1. khLink 软件本身免费，源码公开。扫码直连和部署到自己的服务器都不收费。
-        2. 使用官方服务器（账户连接）也免费。每个账号每月（按北京时间自然月）有 300 MB 流量额度，按经过官方服务器的内容数据量统计，上传和下载都算，在线状态等心跳不计；扫码直连和自建服务器不计流量。当月额度用完后仍可登录和查看已有内容，远程操作暂停到下月 1 日。khQuant VIP 会员在会员有效期内不限流量。运营者可以根据服务器成本调整免费额度，调整前会在官网公布。
+        2. 使用官方服务器（账户连接）也免费。一般账号每月（按北京时间自然月）有 300 MB 流量额度，具体额度以账号实际授权为准。流量按经过官方服务器的内容数据量统计，上传和下载都算，在线状态等心跳不计；扫码直连和自建服务器不计流量。当月有限额度用完后仍可登录和查看已有内容，远程操作暂停到下月 1 日。运营者可以根据服务器成本调整免费额度，调整前会在官网公布。
         3. khLink 不出售会员，也不向你收取任何费用。
         4. 模型调用、智能体订阅、网络、应用商店和其他第三方服务的价格、退款、额度、地域限制、停用及数据处理由相应服务商负责。khLink 不代收第三方费用，也不保证第三方账户、模型或接口持续可用。
         5. 第三方账号的封禁和限制：Codex、Claude、DeepSeek Harness、Hermes、Pi、反重力等智能体，以及它们背后的模型和平台，有各自的使用条款，可能限制远程控制、自动化操作、多设备登录、代理或特定地区使用。是否通过 khLink 使用这些服务、以什么方式使用，由你自己判断并承担风险。你的第三方账号被封禁、停用、限流、降级、扣除额度或要求验证，无论是否与使用 khLink 有关，运营者都不承担责任，也不负责申诉、恢复账号或赔偿由此造成的订阅费用、额度、数据和其他损失。
@@ -70,7 +70,7 @@ internal object LegalCopy {
 
     val privacy = """
         khLink 隐私政策
-        生效日期：2026-11-07 · 版本：$VERSION
+        生效日期：2026-11-08 · 版本：$VERSION
         运营者：看海（个人开发者）
         联系邮箱：hhsci558@gmail.com（也可以用应用内“隐私、协议与支持”入口）
 
@@ -88,7 +88,7 @@ internal object LegalCopy {
         我们为提供你主动请求的登录、设备绑定、同步、通知、支持和更新而处理必要信息；为履行合同、遵守法律、保护服务安全、处理投诉和防止滥用而处理相应信息；对可选诊断、分析、营销或其他非必要处理，在需要时单独征得你的选择。拒绝必要信息可能导致相应功能无法使用。
 
         四、第三方与跨境
-        khLink 可能连接 khsci.com 网站（账号和 khQuant 会员状态）、Cloudflare（扫码直连时手机和电脑不在同一网络，经它的临时隧道转发用配对密钥加密的数据，它看不到内容）、GitHub 和 jsDelivr（更新下载）、Codex 等智能体、模型供应商、操作系统通知、应用商店、网络/云主机、错误诊断和你主动配置的 MCP 或开发工具。第三方按自己的条款和隐私政策处理信息，khLink 不控制其独立处理。中继服务器可能部署在中华人民共和国境外（包括美国洛杉矶）；使用云模式可能导致密文、账户标识、设备信息和有限日志跨境处理。拒绝必要的跨境处理可能无法使用云中继，但二维码直连等功能仍取决于实际实现和网络条件。
+        khLink 可能连接 khsci.com 网站（账号及会员权益状态）、Cloudflare（扫码直连时手机和电脑不在同一网络，经它的临时隧道转发用配对密钥加密的数据，它看不到内容）、GitHub 和 jsDelivr（更新下载）、Codex 等智能体、模型供应商、操作系统通知、应用商店、网络/云主机、错误诊断和你主动配置的 MCP 或开发工具。第三方按自己的条款和隐私政策处理信息，khLink 不控制其独立处理。中继服务器可能部署在中华人民共和国境外（包括美国洛杉矶）；使用云模式可能导致密文、账户标识、设备信息和有限日志跨境处理。拒绝必要的跨境处理可能无法使用云中继，但二维码直连等功能仍取决于实际实现和网络条件。
 
         五、保存、删除与本地缓存
         我们只在实现目的所需的最短期间或法律要求的期间保存信息。账户、设备和安全记录通常在账户存续、撤销、争议处理及必要的安全/法定期限内保留；加密历史在你申请删除、注销、达到保存期限或技术清理完成前可能保留。备份、法定留存、不可立即删除的密文和第三方独立记录可能不会同步删除。本地缓存、下载文件、电脑原始文件、系统日志和第三方服务中的副本需要你分别清理。

@@ -2,12 +2,15 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { stripRequestMarker } = require('./request-marker');
+const { normalizeDesktopQuestionReply } = require('./codex-questions');
 
 // Codex imageGeneration.result is a plain base64 string.  Generated PNGs can
 // be several megabytes (the app-server item itself is not a data URI), so the
 // old 900k limit silently discarded otherwise valid images.
 const MAX_INLINE_IMAGE_CHARS = 6_000_000;
-const MAX_INLINE_IMAGE_TOTAL_CHARS = 8_000_000;
+// Leave room for encryption/base64 and the relay's 12 MiB JSON limit while
+// allowing several ordinary generated images in the same tool result.
+const MAX_INLINE_IMAGE_TOTAL_CHARS = 9_000_000;
 
 function clip(value, max = 64 * 1024) {
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
@@ -249,7 +252,8 @@ function normalizeItems(thread, limit = null) {
         : hasLocalImageMarkup(item.text ?? item.content ?? item.output)
           ? '图片附件'
         : '';
-      const content = clip(type === 'contextCompaction' ? '上下文已自动压缩' : stripProposedPlanMarkup(displayText(item.text ?? item.content ?? item.output ?? item) || fallbackText));
+      const visible = type === 'contextCompaction' ? '上下文已自动压缩' : stripProposedPlanMarkup(displayText(item.text ?? item.content ?? item.output ?? item) || fallbackText);
+      const content = clip(type === 'userMessage' ? normalizeDesktopQuestionReply(visible) : visible);
       result.push({ id: item.id || crypto.createHash('sha256').update(`${thread.id}|${order}|${content.text}`).digest('hex'),
         order: ++order, createdAt: turn.createdAt || thread.updatedAt || Date.now(), value: {
           type: displayType, ...content, status: item.status || null, ...(images.length ? { images } : {})

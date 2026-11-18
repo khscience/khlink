@@ -239,6 +239,55 @@ class QueuedInstructionTest {
         assertFalse(showInstructionInQueue(mergeQueuedInstruction(started, queued.copy(stateVersion = 3)), sentAt + QUEUE_SETTLE_MS))
     }
 
+    @Test fun idleCodexTransportQueueRemainsSendingUntilTheComputerConfirms() {
+        val sentAt = 1_000_000L
+        val sent = QueuedInstruction("idle", "请继续", 100, "sending", blocking = false, sentAt = sentAt)
+        val queued = mergeQueuedInstruction(sent, sent.copy(state = "desktop_queued", blocking = true, stateVersion = 1, sentAt = 0L))
+        val now = sentAt + QUEUE_SETTLE_MS + 60_000
+        for (state in listOf("pending", "dispatching", "desktop_queued")) {
+            for (status in listOf("idle", "completed", "failed", "")) {
+                val item = queued.copy(state = state)
+                assertFalse(showInstructionInQueue(item, now, "codex", status))
+                val bubble = mergeTransientUserInstructions(emptyList(), listOf(item), now, "codex", status).single()
+                assertEquals("outbound:idle", bubble.id)
+                assertEquals("sending", bubble.status)
+            }
+        }
+        // The computer's snapshot can also arrive after recreation without a phone send time.
+        assertFalse(showInstructionInQueue(queued.copy(sentAt = 0L), now, "codex", "idle"))
+        val confirmed = mergeQueuedInstruction(queued, queued.copy(state = "started", stateVersion = 2))
+        assertEquals("sent", mergeTransientUserInstructions(emptyList(), listOf(confirmed), now, "codex", "running").single().status)
+        val history = HistoryItem("real", 120000, "userMessage", "请继续", null, false, createdAt = 120)
+        assertEquals(listOf(history), mergeTransientUserInstructions(listOf(history), listOf(confirmed), now, "codex", "running"))
+    }
+
+    @Test fun codexBusyTurnsExplicitQueuesAndFailuresRetainTheirExistingControls() {
+        val now = 100_000L
+        val item = QueuedInstruction("test", "下一条", 100, "desktop_queued", blocking = true, sentAt = now - QUEUE_SETTLE_MS)
+        for (status in listOf("desktop_running", "waiting_answer", "waiting_input", "compacting")) {
+            assertTrue(showInstructionInQueue(item, now, "codex", status))
+            assertTrue(mergeTransientUserInstructions(emptyList(), listOf(item), now, "codex", status).isEmpty())
+        }
+        assertTrue(showInstructionInQueue(item.copy(queueRequested = true), now, "codex", "idle"))
+        assertTrue(showInstructionInQueue(item.copy(origin = "desktop"), now, "codex", "idle"))
+        assertTrue(showInstructionInQueue(item.copy(state = "uncertain"), now, "codex", "idle"))
+        assertTrue(showInstructionInQueue(item.copy(state = "failed"), now, "codex", "idle"))
+        // The change is scoped to Codex and depends on the thread status being supplied.
+        assertTrue(showInstructionInQueue(item, now, "claude", "idle"))
+        assertTrue(showInstructionInQueue(item, now, "codex", null))
+    }
+
+    @Test fun codexStatusChangesMoveOneItemBetweenQueueAndConversationWithoutDuplicates() {
+        val now = 100_000L
+        val item = QueuedInstruction("one", "下一条", 100, "desktop_queued", blocking = true, sentAt = now - QUEUE_SETTLE_MS)
+        for ((status, inQueue) in listOf("idle" to false, "running" to true, "completed" to false)) {
+            assertEquals(inQueue, showInstructionInQueue(item, now, "codex", status))
+            assertEquals(if (inQueue) 0 else 1, mergeTransientUserInstructions(emptyList(), listOf(item), now, "codex", status).size)
+        }
+        val real = HistoryItem("real", 120000, "userMessage", "下一条", null, false, createdAt = 120)
+        assertEquals(listOf(real), mergeTransientUserInstructions(listOf(real), listOf(item), now, "codex", "completed"))
+    }
+
     @Test
     fun replayedQueuedStateCannotRegressStartedInstruction() {
         val started = QueuedInstruction("request-order", "已开始", 100, "started", startedAt = 120)

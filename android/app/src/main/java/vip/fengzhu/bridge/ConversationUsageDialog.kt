@@ -33,11 +33,13 @@ import java.util.Locale
 @Composable
 internal fun ConversationUsageDialog(
     threadId: String, usage: ConversationTokenUsage?, loading: Boolean, online: Boolean, unit: TokenDisplayUnit,
-    refresh: () -> Unit, dismiss: () -> Unit,
+    textSpeed: String? = null, refresh: () -> Unit, dismiss: () -> Unit,
 ) {
     var selected by remember(threadId) { mutableIntStateOf(0) }
     val counts = when (selected) { 1 -> usage?.turn; 2 -> usage?.latest; else -> usage?.totals }
-    val labels = listOf("累计", if (usage?.turnActive == true) "本轮" else "最近一轮", "最近调用")
+    val labels = listOf("对话累计", if (usage?.turnActive == true) "本轮" else "最近一轮", "最近调用")
+    val requestSpeed = usage?.latestOutputSpeed
+    val turnSpeed = usage?.completedTurns?.maxByOrNull { it.completedAt }?.let(::wholeTurnSpeedLabel)
     AlertDialog(
         onDismissRequest = dismiss,
         title = {
@@ -48,6 +50,14 @@ internal fun ConversationUsageDialog(
         },
         text = {
             Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    requestSpeed?.let { "最近请求${outputSpeedLabel(it)}" } ?: turnSpeed ?: textSpeed ?: when {
+                        loading || usage?.status == "scanning" -> "正在读取输出速度…"
+                        else -> "暂无可用速度记录"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 if (usage?.totals != null) {
                     Row(Modifier.fillMaxWidth()) {
                         labels.forEachIndexed { index, label ->
@@ -88,6 +98,13 @@ internal fun ConversationUsageDialog(
                 Text("缓存已包含在输入中，推理已包含在输出中；“—”表示日志未提供。累计是反复调用的总用量，不是当前上下文长度，也不能换算成订阅剩余额度。",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("按此会话主日志统计，不含子代理用量。分叉可能包含继承记录。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val speedNote = when {
+                    requestSpeed != null -> "输出速度按单次请求计算，包含首字等待、推理和本地处理延迟。"
+                    textSpeed != null && turnSpeed == null -> "字符速度按可见正文计数。正文均速包含本轮等待和工具耗时。"
+                    turnSpeed != null -> "整轮均速按最近完成一轮的输出 Token 和耗时计算，包含工具执行和等待。"
+                    else -> null
+                }
+                speedNote?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         },
         confirmButton = { TextButton(dismiss) { Text("关闭") } },
@@ -101,4 +118,28 @@ private fun TokenUsageRow(label: String, value: Long?, unit: TokenDisplayUnit) {
         Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
         Text(formatTokenDisplay(value, unit), style = MaterialTheme.typography.bodyMedium)
     }
+}
+
+@Composable
+internal fun TurnUsageDialog(turn: CompletedTurnTokenUsage, dismiss: () -> Unit) {
+    fun seconds(ms: Long) = "${java.text.DecimalFormat("0.###", java.text.DecimalFormatSymbols(Locale.US)).format(java.math.BigDecimal.valueOf(ms, 3))} 秒"
+    AlertDialog(onDismissRequest = dismiss, title = { Text("本轮统计") }, text = {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val counts = turn.usage
+            val rows = buildList {
+                add("输入 Token" to formatTokenCount(counts.input))
+                add("输出 Token" to formatTokenCount(counts.output))
+                add("合计 Token" to formatTokenCount(counts.total))
+                turn.firstTokenMs?.let { add("首个 Token 等待" to seconds(it)) }
+                if (turn.elapsedMs > 0) add("总耗时" to seconds(turn.elapsedMs))
+            }
+            rows.forEach { (label, value) ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(label, Modifier.weight(1f))
+                    Text(value, fontWeight = FontWeight.Medium)
+                }
+            }
+            if (turn.partial) Text("仅含已记录的用量", style = MaterialTheme.typography.bodySmall)
+        }
+    }, confirmButton = { TextButton(dismiss) { Text("关闭") } })
 }

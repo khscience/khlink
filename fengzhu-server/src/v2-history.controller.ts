@@ -1,6 +1,13 @@
 import { BadRequestException, Body, Controller, Get, Param, Put, Query, Req, UseGuards } from '@nestjs/common'
 import { DatabaseService } from './database.service'
 import { V2AuthGuard, type V2Request } from './v2-auth.guard'
+import { largeRowBytes } from './traffic.middleware'
+
+/** Lets the traffic count split large rows (images) out of a history read. */
+function noteLargeRows(req: V2Request, rows: unknown): void {
+  const locals = (req as V2Request & { res?: { locals?: Record<string, unknown> } }).res?.locals
+  if (locals) locals.largeHistoryBytes = largeRowBytes(rows)
+}
 
 function bounded(value: string | undefined, fallback: number, max: number): number {
   const parsed = Number(value)
@@ -55,6 +62,7 @@ export class V2HistoryController {
       if (!Number.isFinite(since) || since < 0) throw new BadRequestException('Invalid changedSince')
       const page = this.database.listAccountItemsChangedSince(req.accountClaims.sub, threadId, since, pageLimit)
       const trimmed = this.database.accountThreadTrimmedBefore(req.accountClaims.sub, threadId)
+      noteLargeRows(req, (page as { items?: unknown }).items)
       return { ...page, ...(trimmed !== null ? { trimmedBefore: trimmed } : {}) }
     }
     // Taken before the rows: an item stored meanwhile is still after it.
@@ -64,6 +72,7 @@ export class V2HistoryController {
     // Older items removed by a clean-up: phones drop their copies below the
     // cut and say so instead of paging further (older apps ignore it).
     const trimmedBefore = this.database.accountThreadTrimmedBefore(req.accountClaims.sub, threadId)
+    noteLargeRows(req, rows.slice(0, pageLimit))
     return { items: rows.slice(0, pageLimit), hasMore: rows.length > pageLimit, cursor, ...(trimmedBefore !== null ? { trimmedBefore } : {}) }
   }
 

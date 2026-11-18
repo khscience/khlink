@@ -426,6 +426,14 @@ test('background protocol carries the uploaded image as a first-class localImage
   }]), /read_image/);
 });
 
+test('attachment-only retries keep one block per file when old queue text already contains it', () => {
+  const file = { name: '清单.txt', path: 'C:\\Temp\\清单.txt', size: 42 };
+  const other = { ...file, path: 'C:\\Temp\\other\\清单.txt' };
+  const saved = withAttachmentContext('', [file]);
+  assert.equal(codexInput(saved, [file])[0].text, saved);
+  assert.equal(codexInput(saved, [file, other])[0].text, withAttachmentContext('', [file, other]));
+});
+
 test('adds a Desktop-owned image to Codex queue with the original request id', async () => {
   const connector = Object.create(Connector.prototype);
   let call;
@@ -1337,7 +1345,7 @@ test('Desktop-owned plain text uses the protocol queue and never UI dispatch', a
   assert.equal(connector.followups.get('plain-1').queueTransport, 'codex');
 });
 
-test('an async answer steers its exact existing queue row after the writer-busy fallback without another send', async () => {
+test('an async answer uses its native question after the writer-busy fallback without queueing', async () => {
   const connector = Object.create(Connector.prototype), calls = [];
   connector.followups = memoryFollowups(); connector.emit = () => {}; connector.log = () => {};
   connector.desktopAdapter = {
@@ -1346,6 +1354,11 @@ test('an async answer steers its exact existing queue row after the writer-busy 
   };
   connector.markDesktopThread = () => {};
   connector.executeQueuedBackgroundTurn = async () => { throw new Error('thread is already open in another app'); };
+  connector.answerNativeAsyncFollowup = async item => {
+    calls.push(['native', item.displayText]);
+    connector.followups.update(item.id, { state: 'started', mode: 'steer', steerRequested: false });
+    return { accepted: true };
+  };
   connector.codex = { request: async (method, args) => {
     calls.push([method]); assert.equal(method, 'thread/queue/add');
     return { queuedSubmission: { id: 'exact-native-row', clientUserMessageId: args.clientUserMessageId, input: args.input } };
@@ -1353,7 +1366,7 @@ test('an async answer steers its exact existing queue row after the writer-busy 
   const text = '<send_user_message_question_reply>\n[{"questionItemId":"test-question","question":"中文问题","answer":"中文回答"}]\n</send_user_message_question_reply>';
   const result = await connector.enqueueFollowup({ requestId: 'async-answer', action: 'turn.steer', args: { threadId: 'task-1', text } }, 'phone');
   assert.equal(result.accepted, true); assert.equal(result.steered, true);
-  assert.deepEqual(calls, [['thread/queue/add'], ['steer', 'exact-native-row', text]]);
+  assert.deepEqual(calls, [['native', text]]);
   assert.equal(connector.followups.get('async-answer').state, 'started');
 });
 
@@ -1371,7 +1384,7 @@ test('an immediate answer to a connector-owned busy turn does not wait for compl
   assert.equal(commands[0].args.threadId, 'task-1');
 });
 
-test('a historical question from an older phone still uses the exact native send-now row', async () => {
+test('a historical question without a valid live native identity is preserved without sending', async () => {
   const connector = Object.create(Connector.prototype), calls = [];
   connector.followups = memoryFollowups(); connector.emit = () => {}; connector.log = () => {};
   connector.markDesktopThread = () => {};
@@ -1385,8 +1398,9 @@ test('a historical question from an older phone still uses the exact native send
   } };
   const text = '<send_user_message_question_reply>\n[{"questionItemId":"question-1","question":"去哪儿？","answer":"公园"}]\n</send_user_message_question_reply>';
   const result = await connector.enqueueFollowup({ requestId: 'historical-answer', action: 'turn.start', args: { threadId: 'task-1', text } }, 'phone');
-  assert.equal(result.steered, true);
-  assert.deepEqual(calls, [['thread/queue/add', text], ['steer', 'answer-row']]);
+  assert.equal(result.failed, true);
+  assert.equal(connector.followups.get('historical-answer').displayText, text);
+  assert.deepEqual(calls, []);
 });
 
 test('explicitly queued text keeps its queue intent even if it contains a question reply', async () => {

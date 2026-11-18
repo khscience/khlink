@@ -148,13 +148,30 @@ export class RelayGateway implements OnModuleDestroy {
       const outgoing = JSON.stringify({ ...frame, sourceDeviceId: claims.deviceId, sequence, createdAt: frame.createdAt || Date.now() })
       const devices = this.accountSockets.get(claims.sub) || new Map()
       let delivered = 0
+      const receivers: Array<[string, number]> = []
+      // A connector only acts on what phones and desktops send (commands,
+      // approvals); another connector's history, status and results are
+      // useless to it, and with several computers on one account forwarding
+      // them used a large share of the account's traffic (2026-11-14).
+      const fromConnector = claims.type === 'connector'
       for (const [deviceId, peers] of devices) {
         if (deviceId === claims.deviceId || (frame.targetDeviceId && frame.targetDeviceId !== deviceId)) continue
-        for (const peer of peers) if (peer.readyState === WebSocket.OPEN) { peer.send(outgoing); delivered++ }
+        let copies = 0
+        for (const peer of peers) {
+          if (peer.readyState !== WebSocket.OPEN || (fromConnector && peer.accountClaims?.type === 'connector')) continue
+          peer.send(outgoing); copies++
+        }
+        if (copies) { receivers.push([deviceId, copies]); delivered += copies }
       }
       // Content counts toward the month (what came in and what went out);
       // presence and status heartbeats do not.
-      if (!CONTROL_FRAMES.has(frame.kind)) this.traffic?.add(claims.sub, Buffer.byteLength(raw) + Buffer.byteLength(outgoing) * delivered)
+      if (!CONTROL_FRAMES.has(frame.kind) && this.traffic) {
+        const size = Buffer.byteLength(outgoing)
+        this.traffic.add(claims.sub, Buffer.byteLength(raw) + size * delivered)
+        this.traffic.addDevice(claims.sub, claims.deviceId, Buffer.byteLength(raw), 0)
+        for (const [deviceId, copies] of receivers) this.traffic.addDevice(claims.sub, deviceId, 0, size * copies)
+        this.traffic.addCategory(claims.sub, `ws.${String(frame.kind).slice(0, 60)}`, Buffer.byteLength(raw), size * delivered)
+      }
       socket.send(JSON.stringify({ type: 'ack', id: frame.id, sequence }))
     } catch (error) {
       socket.send(JSON.stringify({ type: 'error', message: error instanceof Error ? error.message : 'invalid frame' }))

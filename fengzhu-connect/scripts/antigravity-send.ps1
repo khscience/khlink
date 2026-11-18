@@ -9,6 +9,11 @@
 #   -Mode check  like send, but clear the box again instead of pressing Send
 #   -Mode list   only look: the conversation ids in the sidebar
 #   -Mode open   only open the conversation (window left as it was)
+#   -Mode settings  open the conversation and read its model and agent
+#                permission selectors (each menu is opened, read and closed)
+#   -Mode set    choose a model and/or permission preset: -TextFile holds
+#                {"model":"Gemini 3.8 Flash High","permission":"Auto"}; the
+#                selector's label is read back to confirm the choice
 #   -Mode answer answer the question Antigravity is asking (ask_question):
 #                -TextFile holds {"answers":[{"labels":[...],"other":"..."}]};
 #                the options are radio buttons / check boxes ("1 Apple") and
@@ -34,7 +39,7 @@ param(
   [string]$ConversationId = '',
   [string]$TextFile = '',
   [string]$ProgressFile = '',
-  [ValidateSet('send', 'stop', 'probe', 'check', 'list', 'answer', 'open')][string]$Mode = 'send',
+  [ValidateSet('send', 'stop', 'probe', 'check', 'list', 'answer', 'open', 'settings', 'set')][string]$Mode = 'send',
   [int]$IdleSeconds = 0
 )
 $ErrorActionPreference = 'Stop'
@@ -67,7 +72,22 @@ function Write-ProgressState($phase, $extra) {
   if ($extra) { foreach ($key in $extra.Keys) { $state[$key] = $extra[$key] } }
   [System.IO.File]::WriteAllText($ProgressFile, ($state | ConvertTo-Json -Compress))
 }
+# Shows or hides the sidebar. Older versions expose its toggle as a plain
+# button (Invoke); since 2.32 it is an expand/collapse button.
+function Set-Sidebar($toggle, $show) {
+  try { $toggle.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); return $true } catch {}
+  try { $pattern = $toggle.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern) } catch { return $false }
+  try { if ($show) { $pattern.Expand() } else { $pattern.Collapse() } } catch { return $false }
+  return $true
+}
+# Antigravity 2.32's accessibility tree only catches up when it is asked to
+# do something (seen: links still missing seconds after the sidebar opened);
+# scrolling the toggle into view, where it already is, is a no-op that does.
+function Nudge-Tree($element) {
+  try { $element.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern).ScrollIntoView() } catch {}
+}
 function Out-Result($ok, $reason, $extra) {
+  if ($script:sidebarShown) { Set-Sidebar $script:sidebarShown $false | Out-Null; $script:sidebarShown = $null }
   # Hand the foreground back to the window the user had in front.
   if ($script:previous -ne [IntPtr]::Zero -and $script:previous -ne $proc.MainWindowHandle -and [KhAgWin]::GetForegroundWindow() -eq $proc.MainWindowHandle) {
     [KhAgWin]::keybd_event(0x87, 0, 0, [UIntPtr]::Zero); [KhAgWin]::SetForegroundWindow($script:previous) | Out-Null; [KhAgWin]::keybd_event(0x87, 0, 2, [UIntPtr]::Zero)
@@ -75,7 +95,7 @@ function Out-Result($ok, $reason, $extra) {
   if ($script:wasMinimized) { Start-Sleep -Milliseconds 300; [KhAgWin]::ShowWindow($proc.MainWindowHandle, 6) | Out-Null }
   $o = @{ ok = $ok; reason = $reason; elapsedMs = $script:phaseClock.ElapsedMilliseconds; mayHaveSent = $script:sendAttempted }
   if ($extra) { foreach ($k in $extra.Keys) { $o[$k] = $extra[$k] } }
-  [Console]::Out.WriteLine(($o | ConvertTo-Json -Compress)); exit 0
+  [Console]::Out.WriteLine(($o | ConvertTo-Json -Compress -Depth 6)); exit 0
 }
 trap { Out-Result $false 'automation_error' @{ mayHaveSent = $script:sendAttempted } }
 if ($Mode -ne 'list' -and $ConversationId -notmatch '^[0-9a-f-]{36}$') { Out-Result $false 'bad_conversation_id' }
@@ -131,14 +151,18 @@ function Focus-Box($box) {
   if (-not (Ensure-Foreground)) { return $false }
   $script:focusIssue = 'focus_unavailable'
   try { $box.SetFocus() } catch { return $false }
-  Start-Sleep -Milliseconds 200
-  $focused = $ae::FocusedElement
-  if (-not $focused -or [KhAgWin]::GetForegroundWindow() -ne $hwnd) { return $false }
-  # Recent editors focus a child of the combobox. Only accept that editor's
-  # own descendants, never a different control or another window.
-  for ($depth = 0; $depth -lt 8 -and $focused; $depth++) {
-    if ([System.Windows.Automation.Automation]::Compare($focused.GetRuntimeId(), $box.GetRuntimeId())) { return $true }
-    $focused = [System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($focused)
+  # 2.32 reports the new focus only after the tree is nudged: look a few times.
+  for ($try = 0; $try -lt 6; $try++) {
+    Start-Sleep -Milliseconds 200
+    Nudge-Tree $box
+    $focused = $ae::FocusedElement
+    if (-not $focused -or [KhAgWin]::GetForegroundWindow() -ne $hwnd) { return $false }
+    # Recent editors focus a child of the combobox. Only accept that editor's
+    # own descendants, never a different control or another window.
+    for ($depth = 0; $depth -lt 8 -and $focused; $depth++) {
+      if ([System.Windows.Automation.Automation]::Compare($focused.GetRuntimeId(), $box.GetRuntimeId())) { return $true }
+      $focused = [System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($focused)
+    }
   }
   $script:focusIssue = 'focus_outside_editor'
   return $false
@@ -175,7 +199,26 @@ if ($Mode -eq 'send' -and $IdleSeconds -gt 0) {
   if ($idle -lt $IdleSeconds * 1000) { Out-Result $false 'user_active' @{ idleMs = $idle } }
 }
 
+# With the sidebar hidden (its toggle in the title bar) no conversation link
+# exists at all: show it for this run and hide it again in Out-Result.
+function Any-ConversationLink {
+  $c = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Hyperlink)
+  foreach ($l in $win.FindAll($scope, $c)) {
+    try { if ($l.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -match '/c/[0-9a-f-]{36}$|/history$') { return $true } } catch {}
+  }
+  return $false
+}
+function Show-Sidebar {
+  $toggle = Find-Named ([System.Windows.Automation.ControlType]::Button) 'Toggle Sidebar'
+  if ($toggle) { Nudge-Tree $toggle; Start-Sleep -Milliseconds 150 }
+  if (Any-ConversationLink) { return }
+  if (-not $toggle) { return }
+  if (-not (Set-Sidebar $toggle $true)) { return }
+  $script:sidebarShown = $toggle
+  for ($i = 0; $i -lt 20 -and -not (Any-ConversationLink); $i++) { Start-Sleep -Milliseconds 150; Nudge-Tree $toggle }
+}
 $link = Find-Link $ConversationId
+if (-not $link -and $Mode -ne 'probe') { Show-Sidebar; $link = Find-Link $ConversationId }
 if (-not $link -and $Mode -ne 'probe') {
   $more = SeeAll-Buttons
   foreach ($b in $more) { try { $b.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() } catch {} }
@@ -191,16 +234,33 @@ if (-not $link -and $Mode -ne 'probe') {
   }
   if ($history) {
     $script:previous = [KhAgWin]::GetForegroundWindow()
-    if ([KhAgWin]::IsIconic($hwnd)) { $script:wasMinimized = $true; [KhAgWin]::ShowWindow($hwnd, $(if ($Mode -in @('answer', 'open', 'stop')) { 4 } else { 9 })) | Out-Null; Start-Sleep -Milliseconds 700 }
+    if ([KhAgWin]::IsIconic($hwnd)) { $script:wasMinimized = $true; [KhAgWin]::ShowWindow($hwnd, $(if ($Mode -in @('answer', 'open', 'stop', 'settings', 'set')) { 4 } else { 9 })) | Out-Null; Start-Sleep -Milliseconds 700 }
     $history.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     for ($i = 0; $i -lt 15 -and -not $link; $i++) { Start-Sleep -Milliseconds 200; $link = Find-Link $ConversationId }
   }
 }
-if (-not $link) { Out-Result $false 'conversation_not_in_sidebar' }
+# The page's own address names the conversation shown, sidebar or not
+# (2.32: https://127.0.0.1:<port>/c/<id>?project=...).
+function Shown-ConversationId {
+  $c = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Document)
+  foreach ($d in $win.FindAll($scope, $c)) {
+    try { if ($d.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -match '/c/([0-9a-f-]{36})(\?|$)') { return $Matches[1] } } catch {}
+  }
+  return ''
+}
+# A probe only asks about the conversation in front; with the sidebar hidden
+# it is recognised by that address and the window title.
+$shownTitle = ''
+if (-not $link -and $Mode -eq 'probe' -and (Shown-ConversationId) -eq $ConversationId) {
+  $name = [string]$win.Current.Name
+  $cut = $name.IndexOf(' - ')
+  if ($cut -gt 0) { $shownTitle = $name.Substring(0, $cut) }
+}
+if (-not $link -and -not $shownTitle) { Out-Result $false 'conversation_not_in_sidebar' }
 if ($Mode -eq 'probe') {
   $box = Find-MessageBox
   $send = Find-Named ([System.Windows.Automation.ControlType]::Button) 'Send message'
-  $title = [string]$link.Current.Name
+  $title = if ($link) { [string]$link.Current.Name } else { $shownTitle }
   $current = $title.Length -gt 0 -and ([string]$win.Current.Name).StartsWith("$title - ", [System.StringComparison]::Ordinal)
   $active = $false
   $buttonCondition = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
@@ -212,10 +272,12 @@ if ($Mode -eq 'probe') {
 
 if ($script:previous -eq [IntPtr]::Zero) { $script:previous = [KhAgWin]::GetForegroundWindow() }
 # answer: shown without activation (SW_SHOWNOACTIVATE); send needs it in front anyway.
-if ([KhAgWin]::IsIconic($hwnd)) { $script:wasMinimized = $true; [KhAgWin]::ShowWindow($hwnd, $(if ($Mode -in @('answer', 'open', 'stop')) { 4 } else { 9 })) | Out-Null; Start-Sleep -Milliseconds 700 }
+if ([KhAgWin]::IsIconic($hwnd)) { $script:wasMinimized = $true; [KhAgWin]::ShowWindow($hwnd, $(if ($Mode -in @('answer', 'open', 'stop', 'settings', 'set')) { 4 } else { 9 })) | Out-Null; Start-Sleep -Milliseconds 700 }
 $link.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
 $targetTitle = [string]$link.Current.Name
 function Is-TargetOpen {
+  # 2.32 shortens a long title in the window's name; its page address is exact.
+  if ((Shown-ConversationId) -eq $ConversationId) { return $true }
   $name = [string]$win.Current.Name
   return $targetTitle.Length -gt 0 -and ($name -eq $targetTitle -or $name.StartsWith("$targetTitle - ", [System.StringComparison]::Ordinal))
 }
@@ -223,9 +285,10 @@ $box = $null
 $opened = $false
 for ($i = 0; $i -lt 30; $i++) {
   Start-Sleep -Milliseconds 150
+  Nudge-Tree $link
   # While a question is showing, its panel takes the message box's place.
   $opened = Is-TargetOpen
-  if ($Mode -in @('answer', 'open', 'stop')) { if ($opened) { break } else { continue } }
+  if ($Mode -in @('answer', 'open', 'stop', 'settings', 'set')) { if ($opened) { break } else { continue } }
   $box = Find-MessageBox
   if ($box -and $opened) { break }
 }
@@ -233,6 +296,150 @@ if (-not $opened) { Out-Result $false 'conversation_not_opened' }
 Write-ProgressState 'opened' @{}
 if (-not $box -and $Mode -in @('send', 'check')) { Out-Result $false 'no_message_box' }
 if ($Mode -eq 'open') { Out-Result $true 'opened' @{ title = $link.Current.Name } }
+
+# The model and permission selectors under the message box are menu buttons
+# (ExpandCollapse): "Select model, current: Gemini 3.8 Flash High" and
+# "Agent permissions preset selector, current: Auto". Their menus list the
+# choices as menu items; a model item may end in " Notice" or " Unavailable".
+if ($Mode -in @('settings', 'set')) {
+  $presets = @('Request Review', 'Default', 'Auto', 'Turbo')
+  function Selector($prefix) {
+    $c = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+    foreach ($b in $win.FindAll($scope, $c)) { if ([string]$b.Current.Name -like "$prefix*") { return $b } }
+    return $null
+  }
+  function Current-Of($button) { if ($button -and [string]$button.Current.Name -match 'current:\s*(.+)$') { return $Matches[1].Trim() } return '' }
+  function Menu-Items($button) {
+    Nudge-Tree $button
+    try { $button.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand() } catch {}
+    $items = @()
+    for ($i = 0; $i -lt 20 -and -not $items.Count; $i++) {
+      Start-Sleep -Milliseconds 150
+      Nudge-Tree $button
+      # The open menu bears its button's name; a menu just closed can linger in the tree.
+      $label = [string]$button.Current.Name
+      $menuCondition = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Menu)
+      $itemCondition = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::MenuItem)
+      foreach ($menu in $win.FindAll($scope, $menuCondition)) {
+        if ([string]$menu.Current.Name -ne $label) { continue }
+        $items = @($menu.FindAll($scope, $itemCondition) | Where-Object { $_.Current.Name -and $_.Current.Name -ne 'View Usage' })
+        if ($items.Count) { break }
+      }
+    }
+    return $items
+  }
+  function Close-Menu($button) { try { $button.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Collapse() } catch {} ; Start-Sleep -Milliseconds 200; Nudge-Tree $button }
+  # A model with thinking levels (Gemini) is a submenu, labelled with the level
+  # in use ("Gemini 3.8 Flash High"); its levels are radio buttons in a menu of
+  # that same label. Only the keyboard opens it: focus the item, then Right.
+  function Has-Levels($item) { return ($item.GetSupportedPatterns() -contains [System.Windows.Automation.ExpandCollapsePattern]::Pattern) }
+  function Level-Buttons($item) {
+    $label = [string]$item.Current.Name
+    if (-not (Ensure-Foreground)) { return @() }
+    try { $item.SetFocus() } catch { return @() }
+    [System.Windows.Forms.SendKeys]::SendWait('{RIGHT}')
+    $menuCondition = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Menu)
+    $radioCondition = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::RadioButton)
+    for ($i = 0; $i -lt 12; $i++) {
+      Start-Sleep -Milliseconds 150
+      Nudge-Tree $item
+      foreach ($menu in $win.FindAll($scope, $menuCondition)) {
+        if ([string]$menu.Current.Name -ne $label) { continue }
+        $radios = @($menu.FindAll($scope, $radioCondition))
+        if ($radios.Count) { return $radios }
+      }
+    }
+    return @()
+  }
+  function Model-Option($item, $withLevels) {
+    $name = [string]$item.Current.Name
+    $state = ''
+    if ($name -match '^(.*?)\s+(Notice|Unavailable|New)$') { $name = $Matches[1]; $state = $Matches[2] }
+    $option = @{ name = $name; available = ($state -ne 'Unavailable') }
+    if ($withLevels -and (Has-Levels $item)) {
+      $levels = @(Level-Buttons $item | ForEach-Object { [string]$_.Current.Name })
+      # Back to the main menu (focus is still on it), so it can be closed as usual.
+      if ($levels.Count) { [System.Windows.Forms.SendKeys]::SendWait('{LEFT}'); Start-Sleep -Milliseconds 150 }
+      foreach ($level in $levels) {
+        if ($name.EndsWith(" $level", [System.StringComparison]::Ordinal)) { $option.name = $name.Substring(0, $name.Length - $level.Length - 1); $option.level = $level }
+      }
+      if ($levels.Count) { $option.levels = $levels }
+    }
+    return $option
+  }
+  # A menu that was just closed can linger in the tree: keep each list to its own kind.
+  function Is-Preset($item) {
+    $name = [string]$item.Current.Name
+    foreach ($p in $presets) { if ($name -eq $p -or $name.StartsWith("$p ", [System.StringComparison]::Ordinal)) { return $true } }
+    return $false
+  }
+  function Preset-Option($item) {
+    $name = [string]$item.Current.Name
+    foreach ($p in $presets) {
+      if ($name -eq $p -or $name.StartsWith("$p ", [System.StringComparison]::Ordinal)) {
+        $detail = $name.Substring($p.Length).Trim() -replace '^Default\s+', ''
+        return @{ name = $p; detail = $detail; isDefault = ($name.Substring($p.Length).Trim() -match '^Default\s') }
+      }
+    }
+    @{ name = $name; detail = ''; isDefault = $false }
+  }
+  $modelButton = Selector 'Select model'
+  $presetButton = Selector 'Agent permissions preset'
+  if (-not $modelButton -and -not $presetButton) { Out-Result $false 'no_settings' }
+  if ($Mode -eq 'settings') {
+    $models = @(); $permissions = @()
+    if ($modelButton) { $models = @(Menu-Items $modelButton | Where-Object { -not (Is-Preset $_) } | ForEach-Object { Model-Option $_ $true }); Close-Menu $modelButton }
+    if ($presetButton) { $permissions = @(Menu-Items $presetButton | Where-Object { Is-Preset $_ } | ForEach-Object { Preset-Option $_ }); Close-Menu $presetButton }
+    Out-Result $true 'settings' @{ model = (Current-Of $modelButton); permission = (Current-Of $presetButton); models = $models; permissions = $permissions }
+  }
+  $request = $null
+  try { $request = ([System.IO.File]::ReadAllText($TextFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json) } catch {}
+  if (-not $request -or (-not $request.model -and -not $request.permission)) { Out-Result $false 'bad_settings' }
+  function Wait-Current($button, $wanted) {
+    for ($i = 0; $i -lt 15; $i++) { Start-Sleep -Milliseconds 150; Nudge-Tree $button; if ((Current-Of $button) -eq $wanted) { return $true } }
+    return $false
+  }
+  function Press($element) {
+    try { $element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); return $true }
+    catch { try { $element.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select(); return $true } catch { return $false } }
+  }
+  function Choose-Preset($wanted) {
+    if ((Current-Of $presetButton) -eq $wanted) { return $true }
+    $target = Menu-Items $presetButton | Where-Object { (Is-Preset $_) -and (Preset-Option $_).name -eq $wanted } | Select-Object -First 1
+    if (-not $target -or -not (Press $target)) { Close-Menu $presetButton; return $false }
+    return (Wait-Current $presetButton $wanted)
+  }
+  # $level only for a model with levels; without one it keeps the level shown.
+  function Choose-Model($wanted, $level) {
+    $current = Current-Of $modelButton
+    if ($current -eq $wanted -or ($level -and $current -eq "$wanted $level")) { return 'ok' }
+    $target = $null
+    foreach ($item in (Menu-Items $modelButton | Where-Object { -not (Is-Preset $_) })) {
+      $name = (Model-Option $item $false).name
+      if ($name -eq $wanted -or ((Has-Levels $item) -and $name.StartsWith("$wanted ", [System.StringComparison]::Ordinal))) { $target = $item; break }
+    }
+    if (-not $target) { Close-Menu $modelButton; return 'model_not_set' }
+    if (-not (Has-Levels $target)) {
+      if (-not (Press $target)) { Close-Menu $modelButton; return 'model_not_set' }
+      if (Wait-Current $modelButton $wanted) { return 'ok' } else { return 'model_not_set' }
+    }
+    $buttons = @(Level-Buttons $target)
+    if (-not $level) { $shown = [string]$target.Current.Name; foreach ($b in $buttons) { if ($shown.EndsWith(" $($b.Current.Name)", [System.StringComparison]::Ordinal)) { $level = [string]$b.Current.Name } } }
+    $pick = $buttons | Where-Object { [string]$_.Current.Name -eq $level } | Select-Object -First 1
+    if (-not $pick -or -not (Press $pick)) { Close-Menu $modelButton; return 'level_not_set' }
+    if (Wait-Current $modelButton "$wanted $level") { return 'ok' } else { return 'level_not_set' }
+  }
+  if ($request.model) {
+    if (-not $modelButton) { Out-Result $false 'no_settings' }
+    $outcome = Choose-Model ([string]$request.model) ([string]$request.level)
+    if ($outcome -ne 'ok') { Out-Result $false $outcome @{ model = (Current-Of $modelButton) } }
+  }
+  if ($request.permission) {
+    if (-not $presetButton) { Out-Result $false 'no_settings' }
+    if (-not (Choose-Preset ([string]$request.permission))) { Out-Result $false 'permission_not_set' @{ permission = (Current-Of $presetButton) } }
+  }
+  Out-Result $true 'set' @{ model = (Current-Of $modelButton); permission = (Current-Of $presetButton) }
+}
 
 if ($Mode -eq 'answer') {
   $request = $null
@@ -252,17 +459,43 @@ if ($Mode -eq 'answer') {
     try { $el.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle(); return } catch {}
     $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
   }
+  # "Submit" / "Continue" (2.32 adds a hidden " ?" glyph), or an older UI's
+  # "Next"; never 2.32's "Next question", which only turns the page.
   function Find-Submit {
     $c = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
-    foreach ($b in $win.FindAll($scope, $c)) { if ([string]$b.Current.Name -match '^(?i)(submit|next)\b' -and $b.Current.IsEnabled) { return $b } }
+    foreach ($b in $win.FindAll($scope, $c)) {
+      $name = [string]$b.Current.Name
+      if ($name -match '^(?i)(submit|continue|next)\b' -and $name -notmatch '^(?i)next question$' -and $b.Current.IsEnabled) { return $b }
+    }
     return $null
   }
+  function Find-Button($name) {
+    $c = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+    foreach ($b in $win.FindAll($scope, $c)) { if ([string]$b.Current.Name -eq $name) { return $b } }
+    return $null
+  }
+  # The page a choice belongs to: its id is "ask-opt-<page>-<n>".
+  function Page-Of($choice) { if ([string]$choice.Current.AutomationId -match '^(ask-opt-.+)-[^-]+$') { return $Matches[1] } return '' }
+  function Nudge-Choices { $anchor = Find-Button 'Cancel questionnaire'; if ($anchor) { Nudge-Tree $anchor } }
+  # Antigravity 2.32 shows several questions one page at a time ("1 / 3",
+  # Previous / Next question). Choosing an option of a single-choice question
+  # turns the page by itself; the last page has the Submit button.
+  $paged = [bool](Find-Button 'Next question')
   $norm = { param($t) (([string]$t) -replace '^\d+\s+', '' -replace '\s+', ' ').Trim() }
   $index = 0
+  $page = ''
+  $total = @($request.answers).Count
   foreach ($answer in $request.answers) {
     $choices = @()
-    for ($i = 0; $i -lt 20 -and -not $choices.Count; $i++) { $choices = @(Choices); if (-not $choices.Count) { Start-Sleep -Milliseconds 200 } }
+    for ($i = 0; $i -lt 20 -and -not $choices.Count; $i++) {
+      if ($i) { Start-Sleep -Milliseconds 200 }
+      Nudge-Choices
+      $choices = @(Choices)
+      # Paged: wait until the page has turned (the previous one can linger).
+      if ($paged -and $page) { $choices = @($choices | Where-Object { (Page-Of $_) -and (Page-Of $_) -ne $page }) }
+    }
     if (-not $choices.Count) { Out-Result $false 'no_question' @{ question = $index } }
+    if ($paged) { $here = Page-Of $choices[0]; $choices = @($choices | Where-Object { (Page-Of $_) -eq $here }) }
     foreach ($label in @($answer.labels)) {
       $want = & $norm $label
       $hit = $choices | Where-Object { (& $norm $_.Current.Name) -eq $want } | Select-Object -First 1
@@ -282,8 +515,26 @@ if ($Mode -eq 'answer') {
       if ((& $norm $got) -ne (& $norm $answer.other)) { Out-Result $false 'other_not_taken' }
     }
     Start-Sleep -Milliseconds 200
+    if ($paged -and $index -lt $total - 1) {
+      # Not the last page: it turns by itself after a single choice; after a
+      # multiple choice or a written answer, turn it with Next question.
+      $page = $here
+      $turned = $false
+      for ($i = 0; $i -lt 8 -and -not $turned; $i++) {
+        Nudge-Choices
+        $turned = [bool](@(Choices) | Where-Object { (Page-Of $_) -and (Page-Of $_) -ne $page } | Select-Object -First 1)
+        if (-not $turned) { Start-Sleep -Milliseconds 150 }
+      }
+      if (-not $turned) {
+        $next = Find-Button 'Next question'
+        if (-not $next -or -not $next.Current.IsEnabled) { Out-Result $false 'submit_unavailable' @{ question = $index } }
+        $next.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+      }
+      $index++
+      continue
+    }
     $submit = $null
-    for ($i = 0; $i -lt 10 -and -not $submit; $i++) { $submit = Find-Submit; if (-not $submit) { Start-Sleep -Milliseconds 150 } }
+    for ($i = 0; $i -lt 15 -and -not $submit; $i++) { Nudge-Choices; $submit = Find-Submit; if (-not $submit) { Start-Sleep -Milliseconds 150 } }
     if (-not $submit) { Out-Result $false 'submit_unavailable' @{ question = $index } }
     $submit.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     Start-Sleep -Milliseconds 600
@@ -335,7 +586,13 @@ function Matching-MessageCount {
 }
 $beforeMatches = Matching-MessageCount
 if (-not (Paste-Into $box $text)) { Out-Result $false 'needs_foreground' @{ focusIssue = $script:focusIssue } }
-if ((& $norm (Box-Text $box)) -ne (& $norm $text)) { Clear-Box $box; Out-Result $false 'text_not_taken' }
+# The pasted text can take a moment to show in the tree (2.32); look again before giving up.
+$taken = $false
+for ($try = 0; $try -lt 6 -and -not $taken; $try++) {
+  if ($try) { Start-Sleep -Milliseconds 200; Nudge-Tree $box }
+  $taken = (& $norm (Box-Text $box)) -eq (& $norm $text)
+}
+if (-not $taken) { Clear-Box $box; Out-Result $false 'text_not_taken' }
 if ($Mode -eq 'check') {
   $send = Find-Named ([System.Windows.Automation.ControlType]::Button) 'Send message'
   $enabled = [bool]($send -and $send.Current.IsEnabled)

@@ -77,12 +77,27 @@ function Focus-Composer($el) {
   if (-not $focused) { return $false }
   return [System.Windows.Automation.Automation]::Compare($focused.GetRuntimeId(), $el.GetRuntimeId()) -and ([KhClaudeNative]::GetForegroundWindow() -eq (Get-ClaudeWindow).MainWindowHandle)
 }
+# A freshly opened page can drop the first SetValue; read back for a while and
+# write again (same rules as claude-desktop-send.ps1: never over other text).
 function Set-ComposerText($value) {
-  $el = Get-Composer; if (-not $el) { return $false }
-  try { $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($value) } catch { return $false }
-  Start-Sleep -Milliseconds 300
-  $norm = { param($t) ($t -replace "`r", '' -replace '\s+', ' ').Trim() }
-  return ((& $norm (Get-ComposerText (Get-Composer))) -eq (& $norm $value))
+  $norm = { param($t) ([string]$t -replace "`r", '' -replace '\s+', ' ').Trim() }
+  $want = & $norm $value
+  for ($attempt = 0; $attempt -lt 3; $attempt++) {
+    $el = $null
+    for ($i = 0; $i -lt 10 -and -not $el; $i++) { $el = Get-Composer; if (-not $el) { Start-Sleep -Milliseconds 200 } }
+    if (-not $el) { return $false }
+    if ($attempt -gt 0 -and $want) {
+      $now = & $norm (Get-ComposerText $el)
+      if ($now -and -not $want.StartsWith($now)) { return $false }
+    }
+    try { $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($value) } catch { Start-Sleep -Milliseconds 300; continue }
+    for ($i = 0; $i -lt 6; $i++) {
+      Start-Sleep -Milliseconds 200
+      $c = Get-Composer
+      if ($c -and (& $norm (Get-ComposerText $c)) -eq $want) { return $true }
+    }
+  }
+  return $false
 }
 function Trust-RequestedWorkspace {
   # A folder deep link can show Claude Desktop's first-use confirmation. The

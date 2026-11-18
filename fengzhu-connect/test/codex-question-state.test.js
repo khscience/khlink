@@ -4,7 +4,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { CodexQuestionTracker, questionEvent } = require('../src/codex-questions');
-const { Connector, readRolloutEvidence, rolloutItem, rolloutStatus } = require('../src/connector');
+const { Connector, readRolloutEvidence, rolloutItem, rolloutStatus, rolloutUserText } = require('../src/connector');
+const { normalizeItems } = require('../src/history');
+const { FollowupStore } = require('../src/followup-store');
 
 const base = Date.parse('2026-10-13T08:00:00Z');
 const record = (at, type, payload) => ({ timestamp: new Date(base + at).toISOString(), type, payload });
@@ -63,6 +65,52 @@ test('desktop-native response_item user replies also resolve questions', () => {
   const event = reply();
   const tracker = tracked(start(), ask(), record(30, 'response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text: event.payload.message }] }));
   assert.equal(tracker.snapshot('t1').pending, false);
+});
+
+test('a delivered Desktop-escaped answer resolves the matching phone question', () => {
+  const original = reply(30, [0]);
+  original.payload.message = `<send_user_message_question_reply>\n${JSON.stringify([{ questionItemId: '["request_user_input_async","call_A",0]', question: '测试颜色？', answer: '蓝色' }])}\n</send_user_message_question_reply>`;
+  const raw = original.payload.message.replace(/\\/g, '\\\\').replace(/</g, '\\<').replace(/\n/g, '\\\n');
+  const escaped = record(30, 'response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text: raw }] });
+  assert.deepEqual(questionEvent(escaped)?.ids, ['["request_user_input_async","call_A",0]']);
+  assert.equal(rolloutItem(escaped)?.text, original.payload.message);
+  assert.equal(rolloutUserText(escaped), original.payload.message);
+  assert.equal(normalizeItems({ id: 't1', turns: [{ items: [{ type: 'userMessage', text: raw }] }] })[0].value.text, original.payload.message);
+  const tracker = tracked(start(), ask(), escaped);
+  assert.deepEqual(tracker.snapshot('t1').questions.map(q => q.id), ['["request_user_input_async","call_A",1]']);
+  assert.equal(questionEvent(record(31, 'response_item', { type: 'message', role: 'user', content: [{ text: `例子 ${raw}` }] })), null);
+  assert.equal(rolloutItem(record(31, 'response_item', { type: 'message', role: 'user', content: [{ text: `例子 ${raw}` }] }))?.text, `例子 ${raw}`);
+  const corrupt = raw.replace('"answer":"蓝色"', '"answer":');
+  assert.equal(questionEvent(record(32, 'response_item', { type: 'message', role: 'user', content: [{ text: corrupt }] })), null);
+  assert.equal(rolloutItem(record(32, 'response_item', { type: 'message', role: 'user', content: [{ text: corrupt }] }))?.text, corrupt);
+});
+
+test('a confirmed escaped desktop message reconciles only its matching uncertain follow-up', (t) => {
+  const questionId = '["request_user_input_async","call_A",0]';
+  const body = [{ questionItemId: questionId, question: '测试颜色？', answer: '蓝色' }];
+  const original = `<send_user_message_question_reply>\n${JSON.stringify(body)}\n</send_user_message_question_reply>`;
+  const escaped = original.replace(/\\/g, '\\\\').replace(/</g, '\\<').replace(/\n/g, '\\\n');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'khlink-escaped-receipt-'));
+  const file = path.join(dir, 'rollout.jsonl');
+  t.after(() => { fs.unlinkSync(file); fs.rmdirSync(dir); });
+  fs.writeFileSync(file, `${JSON.stringify({ timestamp: new Date().toISOString(), type: 'response_item', payload: {
+    type: 'message', role: 'user', content: [{ type: 'input_text', text: escaped }],
+  } })}\n`);
+  const store = Object.create(FollowupStore.prototype);
+  store.items = [
+    { id: 'one', requestId: 'one', threadId: 't1', state: 'uncertain', createdAt: Date.now() - 1000, text: original },
+    { id: 'other', requestId: 'other', threadId: 't1', state: 'uncertain', createdAt: Date.now() - 1000,
+      text: original.replace('call_A', 'call_B') },
+  ];
+  store.remove = (id) => { const i = store.items.findIndex(item => item.id === id); return i < 0 ? null : store.items.splice(i, 1)[0]; };
+  const connector = Object.create(Connector.prototype);
+  connector.followups = store;
+  const events = [];
+  connector.emit = (type, threadId, value) => events.push({ type, threadId, value });
+  connector.noteMatchedRolloutFollowupStarted = () => {};
+  connector.reconcileStartedFollowups('t1', file);
+  assert.deepEqual(store.items.map(item => item.id), ['other']);
+  assert.deepEqual(events.map(event => [event.type, event.value.id]), [['followup.started', 'one']]);
 });
 
 test('out-of-order ask and receipt arriving after a real answer cannot resurrect attention', () => {

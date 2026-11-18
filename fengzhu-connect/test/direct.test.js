@@ -43,6 +43,21 @@ test('data-channel fragmentation keeps large UTF-8 history intact and rejects re
   assert.equal(sender.send('x'.repeat(9 * 1024 * 1024)), false);
 });
 
+test('active direct transfers expire only after an idle gap', () => {
+  let now = 0; let result;
+  const receiver = new FramedChannel({ onMessage: new Event() }, (raw) => { result = raw; }, () => {}, () => now);
+  const packets = [];
+  const sender = new FramedChannel({ readyState: 'open', bufferedAmount: 0, onMessage: new Event(), send: (raw) => packets.push(raw) }, () => {});
+  const raw = 'x'.repeat(8 * 1024 * 3);
+  assert.equal(sender.send(raw), true);
+  receiver.accept(packets[0]); now += 20_000;
+  receiver.accept(packets[1]); now += 20_000;
+  receiver.accept(packets[2]);
+  assert.equal(result, raw);
+  receiver.accept(packets[0]); now += 30_001;
+  assert.throws(() => receiver.accept(packets[1]), /顺序错误/);
+});
+
 test('direct history persists encrypted rows, changes transport keys, and matches cursor semantics', async (t) => {
   await ready(); const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'khlink-direct-history-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

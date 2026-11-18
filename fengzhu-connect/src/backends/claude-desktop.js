@@ -375,6 +375,14 @@ function transcriptItems(lines, startLine = 0, state = {}) {
     }
     if (!row || row.isSidechain || row.isMeta || !row.uuid) continue;
     const at = Date.parse(row.timestamp) || Date.now();
+    // Claude records a generated compaction summary as a user-role message,
+    // but marks it explicitly as internal. It is not a message the person
+    // sent and must not reset the turn/queue state or upload its contents.
+    // A stable hidden row can also replace an older projected copy on replay.
+    if (row.type === 'user' && row.isCompactSummary === true) {
+      items.push({ id: `${row.uuid}:0`, order: line * 16, type: 'hidden', text: '', at });
+      continue;
+    }
     if (row.type === 'user') {
       const text = userText(row.message?.content).trim();
       if (text && !/^\[Request interrupted/.test(text)) {
@@ -451,21 +459,88 @@ function transcriptItems(lines, startLine = 0, state = {}) {
   return items;
 }
 
-// Read new transcript lines after `offset` bytes. Only complete lines are
-// consumed so a line being appended is picked up whole next time.
-function readTranscript(file, offset = 0, lineCount = 0, previousState = {}) {
+// A transcript is read in chunks: one string may not exceed ~512 MB in
+// Node, and a long session full of screenshots reached 1.08 GB (2026-11-15:
+// nothing after it reached the phone, every read failed). A first read of a
+// file larger than TRANSCRIPT_FIRST_TAIL starts at its tail; the lines skipped
+// are only counted, so item ids (line numbers) stay what they always were.
+const TRANSCRIPT_CHUNK = 32 * 1024 * 1024;
+const TRANSCRIPT_FIRST_TAIL = 64 * 1024 * 1024;
+
+function countNewlines(fd, from, to) {
+  const scratch = Buffer.alloc(Math.min(4 << 20, Math.max(1, to - from)));
+  let count = 0;
+  for (let at = from; at < to;) {
+    const read = fs.readSync(fd, scratch, 0, Math.min(scratch.length, to - at), at);
+    if (!read) break;
+    for (let i = 0; i < read; i++) if (scratch[i] === 0x0a) count++;
+    at += read;
+  }
+  return count;
+}
+
+// The offset just past the next newline at or after `from` (or -1 before `limit`).
+function nextLineStart(fd, from, limit) {
+  const scratch = Buffer.alloc(1 << 20);
+  for (let at = from; at < limit;) {
+    const read = fs.readSync(fd, scratch, 0, Math.min(scratch.length, limit - at), at);
+    if (!read) break;
+    const index = scratch.subarray(0, read).indexOf(0x0a);
+    if (index >= 0) return at + index + 1;
+    at += read;
+  }
+  return -1;
+}
+
+/**
+ * Complete lines after `offset`, chunk by chunk: calls `onLines(lines,
+ * firstLineNumber)` per chunk and returns { offset, lineCount, skipped }.
+ * `firstTail`: on a first read (offset 0) of a bigger file, start that many
+ * bytes before its end.
+ */
+function forEachTranscriptChunk(file, offset, lineCount, onLines, { firstTail = TRANSCRIPT_FIRST_TAIL, chunk = TRANSCRIPT_CHUNK } = {}) {
   let size; try { size = fs.statSync(file).size; } catch { return null; }
   if (size < offset) { offset = 0; lineCount = 0; }
-  if (size === offset) return { items: [], offset, lineCount };
+  if (size === offset) return { offset, lineCount, skipped: false };
   const fd = fs.openSync(file, 'r');
   try {
-    const buffer = Buffer.alloc(size - offset); fs.readSync(fd, buffer, 0, buffer.length, offset);
-    const end = buffer.lastIndexOf(0x0a); if (end < 0) return { items: [], offset, lineCount };
-    const lines = buffer.subarray(0, end).toString('utf8').split('\n');
-    const state = { wrapUpCalls: offset > 0 ? previousState.wrapUpCalls : {}, sentFileCalls: offset > 0 ? previousState.sentFileCalls : {},
-      taskList: offset > 0 ? previousState.taskList || null : null, taskListNewTurn: offset > 0 ? !!previousState.taskListNewTurn : false };
-    return { items: transcriptItems(lines, lineCount, state), offset: offset + end + 1, lineCount: lineCount + lines.length, ...state };
+    let skipped = false;
+    if (offset === 0 && firstTail && size > firstTail) {
+      const start = nextLineStart(fd, size - firstTail, size);
+      if (start > 0) { lineCount = countNewlines(fd, 0, start); offset = start; skipped = true; }
+    }
+    while (offset < size) {
+      let readEnd = Math.min(size, offset + chunk);
+      let buffer = Buffer.alloc(readEnd - offset); fs.readSync(fd, buffer, 0, buffer.length, offset);
+      let end = buffer.lastIndexOf(0x0a);
+      if (end < 0) {
+        // One line longer than a chunk (a big pasted image): read up to its end.
+        const lineEnd = readEnd < size ? nextLineStart(fd, readEnd, size) : -1;
+        if (lineEnd < 0) break; // the last line is still being written
+        readEnd = lineEnd; buffer = Buffer.alloc(readEnd - offset); fs.readSync(fd, buffer, 0, buffer.length, offset);
+        end = buffer.length - 1;
+      }
+      const lines = buffer.subarray(0, end).toString('utf8').split('\n');
+      onLines(lines, lineCount);
+      offset += end + 1; lineCount += lines.length;
+    }
+    return { offset, lineCount, skipped };
   } finally { fs.closeSync(fd); }
+}
+
+// Read new transcript lines after `offset` bytes. Only complete lines are
+// consumed so a line being appended is picked up whole next time.
+function readTranscript(file, offset = 0, lineCount = 0, previousState = {}, options = {}) {
+  const continuing = offset > 0;
+  const state = { wrapUpCalls: continuing ? previousState.wrapUpCalls : {}, sentFileCalls: continuing ? previousState.sentFileCalls : {},
+    taskList: continuing ? previousState.taskList || null : null, taskListNewTurn: continuing ? !!previousState.taskListNewTurn : false };
+  const items = [];
+  const upsert = (item) => { const index = items.findIndex((previous) => previous.id === item.id); if (index < 0) items.push(item); else items[index] = item; };
+  const read = forEachTranscriptChunk(file, offset, lineCount, (lines, first) => {
+    for (const item of transcriptItems(lines, first, state)) upsert(item);
+  }, options);
+  if (!read) return null;
+  return { items, offset: read.offset, lineCount: read.lineCount, ...(read.skipped ? { skippedHead: true } : {}), ...state };
 }
 
 // Last turn state from the tail of a transcript (no history upload).
@@ -490,6 +565,11 @@ function peekTranscriptState(file, tailBytes = 64 * 1024) {
 const START_SESSION_TOOL = 'mcp__ccd_session__start_session';
 const OFFER_NEW = '新会话';
 const OFFER_HERE = '在这里做';
+// Claude Desktop 3.x asks before a session edits a git repository: "Work on a
+// separate branch?" (New branch <name> / Stay on the current branch, Continue).
+const BRANCH_TOOL = 'mcp__ccd_directory__propose_branch';
+const BRANCH_NEW = '新建分支';
+const BRANCH_STAY = '留在当前分支';
 
 function pendingToolUse(file, tool, tailBytes = 256 * 1024) {
   let size; try { size = fs.statSync(file).size; } catch { return null; }
@@ -536,6 +616,17 @@ function describeToolUse(call) {
       questions: [{
         question: title ? `要单独开一个新会话来做「${title}」吗？` : '要单独开一个新会话来做这件事吗？', header: '新会话', multiSelect: false,
         options: [{ label: OFFER_NEW, description: '在新会话里做，这个会话继续' }, { label: OFFER_HERE, description: '就在这个会话里做' }],
+      }],
+    };
+  }
+  if (call.name === BRANCH_TOOL) {
+    const suggested = clipText(String(input.suggested || input.name || '').trim(), 120);
+    return {
+      kind: 'question', source: 'branch-offer', tool: call.name, toolUseId: call.id, suggested,
+      questions: [{
+        question: suggested ? `要为这个任务新建分支「${suggested}」吗？` : '要为这个任务新建一个分支吗？', header: '分支', multiSelect: false,
+        options: [{ label: BRANCH_NEW, description: suggested ? `新建 ${suggested}，原分支保留到合并（推荐）` : '原分支保留到合并（推荐）' },
+          { label: BRANCH_STAY, description: '直接在现在的分支上改' }],
       }],
     };
   }
@@ -1023,8 +1114,8 @@ class ClaudeDesktopStore {
 
 module.exports = {
   DesktopPermissionLog, claudeAppDir, realDesktopPath, ClaudeDesktopStore, findDesktopClaudeBin, probeModels, modelLabel, prettyModelId,
-  transcriptItems, readTranscript, readTranscriptImage, peekTranscriptState, pendingToolUse, transcriptPath, projectDirName,
-  START_SESSION_TOOL, OFFER_NEW, OFFER_HERE,
+  transcriptItems, readTranscript, forEachTranscriptChunk, readTranscriptImage, peekTranscriptState, pendingToolUse, transcriptPath, projectDirName,
+  START_SESSION_TOOL, OFFER_NEW, OFFER_HERE, BRANCH_TOOL, BRANCH_NEW, BRANCH_STAY,
   readDesktopQueue: (file, maxBytes) => require('./claude-desktop-queue').readQueue(file, userText, maxBytes),
   snappyDecompress, tableEntries, logBatches, readLocalStorage,
   PERMISSION_TO_MODE, MODE_TO_PERMISSION,

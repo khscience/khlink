@@ -65,6 +65,23 @@ internal fun submitCodexQuestionAnswer(question: CodexQuestion, answer: String,
     return sendNow(questionReplyText(question, answer))
 }
 
+// Group only questions from the same native async call; unrelated calls must
+// never be bundled together just because they arrived in the same snapshot.
+private val asyncQuestionId = Regex("""^\[\s*"request_user_input_async"\s*,\s*("(?:\\.|[^"\\])*")\s*,\s*(\d+)\s*]$""")
+internal fun codexQuestionGroups(questions: List<CodexQuestion>): List<List<CodexQuestion>> =
+    questions.groupBy { q -> asyncQuestionId.matchEntire(q.id)?.groupValues?.get(1) ?: "single:${q.id}" }.values.toList()
+
+internal fun submitCodexQuestionAnswers(questions: List<CodexQuestion>, answers: Map<String, String>,
+    outgoing: List<QueuedInstruction>, sendNow: (String) -> Boolean): Boolean {
+    if (questions.size < 2 || questions.size > 8 || codexQuestionGroups(questions).size != 1 ||
+        questions.map { it.id }.distinct().size != questions.size || questions.any { answers[it.id].isNullOrBlank() }) return false
+    val matches = questions.map { asyncQuestionId.matchEntire(it.id) ?: return false }
+    if (matches.map { it.groupValues[2].toIntOrNull() } != questions.indices.toList()) return false
+    val blocked = pendingCodexAnswers(outgoing).keys + confirmedCodexAnswers(emptyList(), outgoing).keys
+    if (questions.any { it.id in blocked }) return false
+    return sendNow(questionRepliesText(questions, answers.mapValues { it.value.trim() }))
+}
+
 /** A desktop prompt answered from the phone stays closed while the computer
  * handles the answer; a different question (another request id) shows again. */
 internal fun desktopPromptAnswered(answeredRequestId: String?, waitingRequestId: String?): Boolean =

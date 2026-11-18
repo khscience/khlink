@@ -50,6 +50,46 @@ class HermesStoreTest(unittest.TestCase):
             env=env, text=True, encoding="utf-8")
         return json.loads(output)
 
+    def usage(self, root, today, month):
+        env = dict(os.environ, HERMES_HOME=self.temp.name)
+        output = subprocess.check_output([sys.executable, str(HELPER), "usage", root, str(today), str(month)],
+                                         env=env, text=True, encoding="utf-8")
+        return json.loads(output)
+
+    def test_list_works_on_a_store_without_last_activity(self):
+        # Hermes v0.19 (its Windows installer) has no last_activity_at column.
+        other = os.path.join(self.temp.name, "old")
+        os.makedirs(other)
+        conn = sqlite3.connect(os.path.join(other, "state.db"))
+        conn.executescript("""
+          CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, title TEXT,
+            message_count INTEGER, started_at REAL, ended_at REAL, end_reason TEXT, parent_session_id TEXT);
+          CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, tool_calls TEXT, timestamp REAL);
+          INSERT INTO sessions VALUES ('old1','desktop','旧任务',2,100,NULL,NULL,NULL);
+          INSERT INTO sessions VALUES ('old2','desktop','新任务',2,300,NULL,NULL,NULL);
+        """)
+        conn.commit()
+        conn.close()
+        env = dict(os.environ, HERMES_HOME=other)
+        output = subprocess.check_output([sys.executable, str(HELPER), "list"], env=env, text=True, encoding="utf-8")
+        self.assertEqual([row["id"] for row in json.loads(output)["sessions"]], ["old2", "old1"])
+
+    def test_usage_reports_unknown_when_the_native_columns_are_missing(self):
+        self.assertEqual(self.usage("root", 220000, 150000)["status"], "unavailable")
+
+    def test_usage_does_not_guess_a_crossing_segment_and_follows_compression_lineage(self):
+        for name in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN " + name + " INTEGER DEFAULT 0")
+        self.conn.execute("UPDATE sessions SET input_tokens=100,output_tokens=20,cache_read_tokens=30,cache_write_tokens=5,end_reason='compression',ended_at=210 WHERE id='root'")
+        self.conn.execute("INSERT INTO sessions (id,source,started_at,parent_session_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens) VALUES ('child','local',230,'root',10,5,0,0)")
+        self.conn.commit()
+        result = self.usage("root", 220000, 150000)
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["periods"]["today"], {"total": 15, "partial": False})
+        self.assertEqual(result["periods"]["month"], {"total": 15, "partial": True})
+        self.assertEqual(result["periods"]["all"], {"total": 170, "partial": False})
+        self.assertEqual(self.usage("missing", 220000, 150000)["status"], "unavailable")
+
     def add_reset_and_compression(self):
         self.conn.execute("UPDATE sessions SET end_reason='session_reset', ended_at=210 WHERE id='root'")
         self.conn.execute("INSERT INTO sessions VALUES ('reset-child','local',NULL,1,211,220,'compression',230,'root')")

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)][ValidateSet('list', 'answer')][string]$Action,
     [string]$SessionTitle = '',
     [string]$Option = '',
@@ -104,7 +104,11 @@ function Get-Card($root) {
     $texts = @(Get-Elements $root ([System.Windows.Automation.ControlType]::Text) | Where-Object { $_.Current.Name })
     $groups = @(Get-Elements $root ([System.Windows.Automation.ControlType]::Group) | Where-Object { $_.Current.Name })
     $submit = $buttons | Where-Object { $_.Current.Name -in @('提交', 'Submit') } | Select-Object -First 1
-    $allow = $buttons | Where-Object { $_.Current.Name -match '允许一次|允许本次|允许|Allow once|Approve' } | Select-Object -First 1
+    # Exact button names first: a tool row such as "正在写入文件 · ...approve.txt"
+    # is also a Button and matched the loose pattern before the real one.
+    $clickable = @($buttons | Where-Object { $_.GetSupportedPatterns() -contains [System.Windows.Automation.InvokePattern]::Pattern })
+    $allow = $clickable | Where-Object { $_.Current.Name.Trim() -match '^(允许一次|允许本次|允许|Allow once|Allow|Approve)$' } | Select-Object -First 1
+    if (-not $allow) { $allow = $clickable | Where-Object { $_.Current.Name.Length -le 12 -and $_.Current.Name -match '允许一次|允许本次|允许|Allow once|Approve' } | Select-Object -First 1 }
     $deny = $buttons | Where-Object { $_.Current.Name -match '^(拒绝|Deny|Reject)$' } | Select-Object -First 1
     # Newer DSH renders the question prompt as the card header Button/Group,
     # while older builds used a Text. Accept all three so the phone can show
@@ -144,7 +148,7 @@ function Wait-Card($root, $timeoutSeconds) {
 # Start from the first page, choose each page's answer, then submit.
 function Find-Radio($card, $label) {
     $radio = $card.RadioElements | Where-Object { $_.Current.Name -eq $label } | Select-Object -First 1
-    $normalized = ($label -replace 's*[（(][^）)]*[）)]s*$', '').Trim()
+    $normalized = ($label -replace '\s*[（(][^）)]*[）)]\s*$', '').Trim()
     if (-not $radio -and $normalized) { $radio = $card.RadioElements | Where-Object { $_.Current.Name -eq $normalized } | Select-Object -First 1 }
     if (-not $radio -and $normalized) { $radio = $card.RadioElements | Where-Object { $_.Current.Name -and ($normalized.StartsWith($_.Current.Name) -or $_.Current.Name.StartsWith($normalized)) } | Select-Object -First 1 }
     return $radio

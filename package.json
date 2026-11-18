@@ -2,6 +2,7 @@
   "name": "fengzhu-agent-bridge",
   "version": "0.1.0",
   "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
   "workspaces": ["fengzhu-server", "fengzhu-connect"],
   "scripts": {
     "build": "npm run build -w fengzhu-server",

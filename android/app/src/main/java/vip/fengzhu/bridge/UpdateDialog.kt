@@ -88,7 +88,7 @@ internal fun UpdateDialog(
                     when (download) {
                         UpdateDownloadState.Idle -> {
                             Text("当前版本 ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodySmall, color = colors.muted)
-                            if (update.notes.isNotEmpty()) UpdateNotes(update.notes)
+                            if (update.noteGroups.isNotEmpty()) UpdateNotes(update.noteGroups)
                             Text("更新会保留登录信息和聊天记录，安装前由系统请你确认。", style = MaterialTheme.typography.bodyMedium)
                         }
                         is UpdateDownloadState.Downloading -> {
@@ -119,13 +119,15 @@ internal fun UpdateDialog(
                                     style = MaterialTheme.typography.bodySmall, color = colors.muted,
                                 )
                             }
-                            UpdateNotes(update.notes)
+                            UpdateNotes(update.noteGroups)
                             Text("请保持 khLink 打开，下载完成后会打开系统安装页面。", style = MaterialTheme.typography.bodyMedium)
                         }
-                        is UpdateDownloadState.Ready -> Text(
-                            "安装包已校验，可以继续安装。如果系统要求授权，请允许 khLink 安装应用后返回。",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
+                        is UpdateDownloadState.Ready -> {
+                            Text("当前版本 ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodySmall, color = colors.muted)
+                            UpdateNotes(update.noteGroups)
+                            Text("安装包已校验，可以继续安装。如果系统要求授权，请允许 khLink 安装应用后返回。",
+                                style = MaterialTheme.typography.bodyMedium)
+                        }
                         is UpdateDownloadState.Failed -> {
                             Text("暂时没能完成下载，可以重试或稍后再试。", style = MaterialTheme.typography.bodyMedium)
                             Surface(color = colors.dangerContainer, shape = RoundedCornerShape(12.dp)) {
@@ -175,16 +177,29 @@ private fun updateSize(bytes: Long): String = when {
 
 /** "这次更新": the version's changes, one row per line. */
 @Composable
-private fun UpdateNotes(notes: List<String>) {
+private fun UpdateNotes(groups: List<UpdateNoteGroup>) {
     val colors = LocalKhLinkSkin.current.palette
-    Surface(shape = RoundedCornerShape(14.dp), color = colors.surfaceAlt) {
-        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("这次更新", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-            if (notes.isEmpty()) Text("暂无更新说明", style = MaterialTheme.typography.bodyMedium, color = colors.muted)
-            notes.forEach { line ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("•", style = MaterialTheme.typography.bodyMedium, color = colors.accent)
-                    Text(line, style = MaterialTheme.typography.bodyMedium)
+    Surface(shape = RoundedCornerShape(14.dp), color = colors.surfaceAlt, contentColor = colors.ink) {
+        // Several skipped versions can be long: the list scrolls inside the dialog.
+        Column(
+            Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState()).padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(if (groups.size > 1) "更新内容（包含 ${groups.size} 个版本）" else "这次更新", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            if (groups.size > 1) Text("上下滑动查看更多", style = MaterialTheme.typography.labelSmall, color = colors.muted)
+            if (groups.isEmpty()) Text("暂无更新说明", style = MaterialTheme.typography.bodyMedium, color = colors.muted)
+            groups.forEachIndexed { index, group ->
+                if (groups.size > 1) {
+                    Text(
+                        group.version, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.muted,
+                        modifier = Modifier.padding(top = if (index == 0) 0.dp else 6.dp),
+                    )
+                }
+                group.notes.forEach { line ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("•", style = MaterialTheme.typography.bodyMedium, color = colors.accent)
+                        Text(line, style = MaterialTheme.typography.bodyMedium)
+                    }
                 }
             }
         }

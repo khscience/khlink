@@ -2,6 +2,7 @@
   "name": "fengzhu-server",
   "version": "0.1.1",
   "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
   "scripts": {
     "build": "nest build",
     "start": "node dist/src/main.js",

@@ -10,7 +10,7 @@ PC で動いている Codex や Claude Code などのエージェントのセッ
 承認、回答、新しい指示。PC の前にいなくても、作業は止まりません。
 
 [![CI](https://github.com/khscience/khlink/actions/workflows/ci.yml/badge.svg)](https://github.com/khscience/khlink/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)](LICENSE)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-2563eb.svg)](LICENSE)
 ![Android](https://img.shields.io/badge/Android-7.0+-3ddc84?logo=android&logoColor=white)
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078d4)
 ![E2EE](https://img.shields.io/badge/エンドツーエンド暗号化-XChaCha20--Poly1305-111827)
@@ -27,12 +27,12 @@ PC で動いている Codex や Claude Code などのエージェントのセッ
 
 ---
 
-## 完全無料、完全オープンソース
+## 完全無料、ソースコード公開
 
-スマホアプリ、PC 側、リレーサーバーのソースコードはすべて公開しています（MIT）。3 つの接続方法は機能が同じで、どれも無料です。
+スマホアプリ、PC 側、リレーサーバーのソースコードはすべて公開しています。個人利用は無料で、商用利用は禁止です（下の「ライセンス」を参照）。3 つの接続方法は機能が同じで、どれも無料です。
 
 - **QR コードで直接接続**：PC に表示される QR コードをスマホで読み取るだけ。アカウント不要で、khLink のサーバーも通りません。
-- **自分のサーバーに立てる**：オープンソースのリレーを自分のマシンに立て、サーバーパスワードでサインインします。アカウントは不要です。
+- **自分のサーバーに立てる**：ソースコード公開のリレーを自分のマシンに立て、サーバーパスワードでサインインします。アカウントは不要です。
 - **公式サーバーを使う**：khLink アカウントでサインインすれば、インストールしてすぐ使えます。各アカウントに毎月 300 MB の無料通信量があり、khQuant VIP 会員は無制限です。khLink は会員を販売していません。
 
 どの方法でも内容はエンドツーエンドで暗号化され、リレーサーバーには暗号文しか見えません。
@@ -230,7 +230,7 @@ flowchart LR
 <details>
 <summary><b>khLink は有料ですか？</b></summary>
 
-ソフトウェアは無料で、ソースコードは MIT ライセンスで公開しています。QR 直接接続と自分のサーバーへのセルフホストは無料です。公式サーバーも無料で、各アカウント毎月 300 MB まで使え、khQuant VIP 会員は無制限です。khLink は会員を販売しておらず、3 つの方法の機能は同じです。
+ソフトウェアは無料で、ソースコードは公開しています。個人・非商用の利用は無料で、商用利用は禁止です。QR 直接接続と自分のサーバーへのセルフホストは無料です。公式サーバーも無料で、各アカウント毎月 300 MB まで使え、khQuant VIP 会員は無制限です。khLink は会員を販売しておらず、3 つの方法の機能は同じです。
 </details>
 
 <details>
@@ -320,7 +320,11 @@ Issue やプルリクエストを歓迎します。まず [CONTRIBUTING.md](CONT
 
 ## ライセンス
 
-[MIT](LICENSE)。`docs/kh-link-*.md` の規約は公式サービスと公式インストーラーにのみ適用されます。
+khLink は 2026-11-18 から [PolyForm Noncommercial License 1.0.0](LICENSE) で提供しています。個人の学習・研究などの非商用目的には無料で使えますが、**商用利用は一切禁止**です。商用ライセンスは作者にお問い合わせください。非商用ライセンスは厳密な意味でのオープンソースではないため、「ソースコード公開」と呼んでいます。
+
+本プロジェクトは Linco Talk の [linco-bridge](https://github.com/lincotalk/linco-bridge)（MIT）をもとにしています。上流由来のコードは引き続き MIT で、[LICENSE-UPSTREAM-MIT](LICENSE-UPSTREAM-MIT) を参照してください。2026-11-18 より前に公開したバージョンは、当時の MIT ライセンスのままです。
+
+`docs/kh-link-*.md` の規約は公式サービスと公式インストーラーにのみ適用されます。
 
 ## 謝辞
 

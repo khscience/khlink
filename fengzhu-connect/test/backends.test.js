@@ -121,10 +121,22 @@ test('executeCommand routes turn ops for an existing Claude thread; Codex thread
 
 test('backends.capabilities returns the per-backend map', async () => {
   const { connector } = connectorForRouting();
+  const refresh = [];
+  connector.refreshClaudeModels = async (options) => { refresh.push(options); };
+  connector.refreshObservedClaudeModels = () => { refresh.push('desktop'); };
   const res = await connector.executeCommand({ action: 'backends.capabilities', args: {} });
+  assert.deepEqual(refresh, [{ onlyIfStale: true }, 'desktop']);
   assert.equal(res.default, 'codex');
   assert.ok(res.backends.codex && res.backends.claude);
   assert.equal(res.backends.claude.displayName, 'Claude Code');
+});
+
+test('screen wake command applies only the requested connector state', async () => {
+  const { connector } = connectorForRouting();
+  let applied = null;
+  connector.screenMonitor = { setEnabled(value) { applied = value; return { keepAwake: value }; } };
+  const result = await connector.executeCommand({ action: 'screen.keepAwake', args: { enabled: true } });
+  assert.equal(applied, true); assert.deepEqual(result, { keepAwake: true });
 });
 
 const { ready } = require('../src/crypto');

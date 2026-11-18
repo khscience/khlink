@@ -108,6 +108,15 @@ test('Codex rename goes through the desktop app, then our app-server; without th
   assert.deepEqual(requests, [{ threadId: '01a0f1fb-9771-7932-8f06-fd8dbcad5a85', name: '小熊猫 新' }]);
   connector.execFileFn = fakeExec([], { ok: false, reason: 'desktop_not_running' });
   assert.deepEqual(await connector.renameCodexOnDesktop('01a0f1fb-9771-7932-8f06-fd8dbcad5a85', '小熊猫'), { renamed: true, desktop: false });
+  const threadId = '01a0f1fb-9771-7932-8f06-fd8dbcad5a85';
+  connector.execFileFn = fakeExec([], { ok: false, reason: 'row_not_found' });
+  assert.deepEqual(await connector.renameCodexOnDesktop(threadId, '手机任务'), { renamed: true, desktop: false });
+  assert.deepEqual(requests.at(-1), { threadId, name: '手机任务' });
+  connector.codex.request = async (method, params) => {
+    if (method === 'thread/name/set') throw new Error('another Codex has an active writer');
+    return read(method, params);
+  };
+  await assert.rejects(connector.renameCodexOnDesktop(threadId, '桌面任务'), /正在电脑端 Codex 里打开/);
   connector.execFileFn = fakeExec([], { ok: false, reason: 'menu_not_found' });
   await assert.rejects(connector.renameCodexOnDesktop('01a0f1fb-9771-7932-8f06-fd8dbcad5a85', 'x'), /菜单/);
   fs.rmSync(dir, { recursive: true, force: true });

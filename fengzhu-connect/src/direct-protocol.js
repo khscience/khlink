@@ -50,8 +50,9 @@ function verifyAnswer(key, answer) {
 
 // A bounded message layer keeps history/file frames below SCTP's message limit.
 class FramedChannel {
-  constructor(channel, receive, fail = () => {}) {
+  constructor(channel, receive, fail = () => {}, now = Date.now) {
     this.channel = channel; this.receive = receive; this.fail = fail;
+    this.now = now;
     this.pending = new Map(); this.queue = []; this.queueBytes = 0; this.draining = false;
     channel.onMessage.subscribe((raw) => { try { this.accept(raw.toString()); } catch (error) { fail(error); } });
   }
@@ -61,16 +62,16 @@ class FramedChannel {
     if (packet.type !== 'chunk') { this.receive(raw); return; }
     const { id, index, total, data } = packet;
     if (!/^[a-f0-9-]{36}$/i.test(id || '') || !Number.isInteger(total) || total < 2 || total > 1024 || !Number.isInteger(index) || index < 0 || index >= total || typeof data !== 'string' || data.length > 11000) throw new Error('无效的直连分片');
-    for (const [key, value] of this.pending) if (Date.now() - value.at > 30000) this.pending.delete(key);
+    for (const [key, value] of this.pending) if (this.now() - value.at > 30000) this.pending.delete(key);
     let entry = this.pending.get(id);
     if (!entry) {
       if (this.pending.size >= 4 || index !== 0) throw new Error('直连分片顺序错误');
-      entry = { at: Date.now(), total, parts: [], bytes: 0 }; this.pending.set(id, entry);
+      entry = { at: this.now(), total, parts: [], bytes: 0 }; this.pending.set(id, entry);
     }
     if (entry.total !== total || index !== entry.parts.length) throw new Error('直连分片顺序错误');
     const part = Buffer.from(data, 'base64'); entry.bytes += part.length;
     if (part.length > CHUNK_SIZE || entry.bytes > MAX_MESSAGE) throw new Error('直连消息过大');
-    entry.parts.push(part);
+    entry.parts.push(part); entry.at = this.now();
     if (entry.parts.length === total) { this.pending.delete(id); this.receive(Buffer.concat(entry.parts).toString()); }
   }
   send(raw, { priority = false } = {}) {

@@ -73,3 +73,59 @@ test('stopping sync also stops the search for the desktop app', t => {
   methods.stopClaudeDesktopSync.call(owner);
   assert.ok(cleared.includes(probe)); assert.equal(owner._claudeDesktopProbeTimer, null);
 });
+
+test('on-demand model refresh coalesces requests and preserves the last good catalogue', async () => {
+  let probes = 0, release;
+  const owner = {
+    currentClaudeBin: () => process.execPath,
+    probeClaudeModels: () => { probes++; return new Promise(resolve => { release = resolve; }); },
+    publishClaudeModelCatalog() {}, log() {},
+  };
+  const first = methods.refreshClaudeModels.call(owner, { onlyIfStale: true });
+  const second = methods.refreshClaudeModels.call(owner, { onlyIfStale: true });
+  assert.equal(probes, 1);
+  release([{ value: 'opus', label: 'Opus 5.5', efforts: ['high'] }]);
+  assert.deepEqual(await first, await second);
+  await methods.refreshClaudeModels.call(owner, { onlyIfStale: true });
+  assert.equal(probes, 1, 'a repeated open does not spawn another probe within the throttle window');
+  owner.probeClaudeModels = async () => [];
+  assert.equal((await methods.refreshClaudeModels.call(owner))[0].value, 'opus');
+});
+
+test('desktop model observations are discarded during profile switches and partial scans', () => {
+  let switching = false, complete = true, profile = 'one';
+  const owner = {
+    claudeProfileLock: { switching: () => switching },
+    claudeDesktop: { root: 'desktop', profileSignature: () => profile, sessionScanComplete: true,
+      readSessions() { this.sessionScanComplete = complete; return [{ model: 'claude-fable-5-2', effort: 'medium', updatedAt: Date.now() }]; } },
+    publishClaudeModelCatalog() {},
+  };
+  methods.refreshObservedClaudeModels.call(owner);
+  assert.equal(owner._claudeObservedModels[0].value, 'claude-fable-5-2');
+  complete = false; owner.claudeDesktop.readSessions = function () { this.sessionScanComplete = false; return []; };
+  methods.refreshObservedClaudeModels.call(owner);
+  assert.equal(owner._claudeObservedModels[0].value, 'claude-fable-5-2');
+  profile = 'two'; methods.refreshObservedClaudeModels.call(owner);
+  assert.deepEqual(owner._claudeObservedModels, [], 'partial scan from another account cannot retain previous observations');
+  switching = true; methods.refreshObservedClaudeModels.call(owner);
+  assert.deepEqual(owner._claudeObservedModels, []);
+});
+
+test('on-demand desktop model refresh reads changed metadata even with an unchanged mtime', () => {
+  const root = tmp(); const dir = path.join(root, 'claude-code-sessions', 'test-account', 'test-org');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'local_00000000-0000-4000-8000-000000000001.json');
+  const timestamp = new Date('2026-01-01T00:00:00.000Z');
+  const write = model => {
+    fs.writeFileSync(file, JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', cliSessionId: 'test', model, lastActivityAt: Date.now() }));
+    fs.utimesSync(file, timestamp, timestamp);
+  };
+  const store = new ClaudeDesktopStore({ root, logFiles: [], profileRegistryRoot: path.join(root, 'no-registry') });
+  write('claude-fable-5-1');
+  assert.equal(store.readSessions()[0].model, 'claude-fable-5-1');
+  write('claude-fable-5-2');
+  assert.equal(store.readSessions()[0].model, 'claude-fable-5-1', 'fixture reproduces the stale mtime cache');
+  const owner = { claudeDesktop: store, publishClaudeModelCatalog() {} };
+  methods.refreshObservedClaudeModels.call(owner);
+  assert.equal(owner._claudeObservedModels[0].value, 'claude-fable-5-2');
+});

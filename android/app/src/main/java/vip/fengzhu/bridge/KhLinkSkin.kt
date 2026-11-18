@@ -114,6 +114,8 @@ data class KhLinkSkin(
     val codexLayout: Boolean = false,
     /** No cards: flat list rows and a document-like conversation, without the Codex rail. */
     val flatLayout: Boolean = false,
+    /** Warm, spacious workspace inspired by the approved phone mockups. */
+    val studioLayout: Boolean = false,
 ) {
     val colors: ColorScheme = lightColorScheme(
         primary = palette.accent,
@@ -401,10 +403,34 @@ object KhLinkSkinCatalog {
         codexLayout = true,
     )
 
-    val all = listOf(sand, codex, minimal, wechat)
+    private val studioPalette = sandPalette.copy(
+        ink = Color(0xFF28231F), accent = Color(0xFFB95735), warm = Color(0xFFC66340),
+        info = Color(0xFF83614F), paper = Color(0xFFFAF5F0), surface = Color(0xFFFCF8F4),
+        surfaceAlt = Color(0xFFF2EAE3), surfaceHigh = Color(0xFFF6EFE9),
+        divider = Color(0xFFE6DBD2), muted = Color(0xFF756D67),
+        brand = Color(0xFFC66340), brandLight = Color(0xFFE6A88F),
+        claudeInk = Color(0xFF965038), claudeContainer = Color(0xFFF5E5DB), claudeBorder = Color(0xFFD59E86),
+        selected = Color(0xFFF5E4DA), selectedMuted = Color(0xFFF2EAE3),
+        userBubble = Color(0xFFF1E9E2), userBorder = Color(0xFFF1E9E2),
+        thinking = Color(0xFFFAF5F0), collapsible = Color(0xFFF2EAE3), codeBlock = Color(0xFFF1E9E2),
+        activity = Color(0xFFF6EFE9), detail = Color(0xFFF6EFE9), chipAlt = Color(0xFFF0E5DD),
+        composerRunning = Color(0xFFFCF8F4), composerRunningBorder = Color(0xFFE6DBD2),
+        runningContainer = Color(0xFFFCF8F4), runningBorder = Color(0xFFE6DBD2),
+        runningInk = Color(0xFF9B5A32), runningChip = Color(0xFFF8EADD),
+    )
+
+    val studio = sand.copy(
+        id = "warm_code", name = "Claude Code 风格主题",
+        description = "暖米色、陶土橙与简洁对话",
+        palette = studioPalette, typography = codexTypography,
+        messageRadius = 18.dp, studioLayout = true,
+    )
+
+    val all = listOf(sand, codex, studio, minimal, wechat)
 
     /** The WeChat theme is the default since 0.1.263; a theme someone picked stays picked. */
-    fun byId(id: String?) = all.firstOrNull { it.id == id } ?: wechat
+    /** The demo build (screenshots, recordings) starts on the default theme instead. */
+    fun byId(id: String?) = all.firstOrNull { it.id == id } ?: if (BuildConfig.DEMO) sand else wechat
 }
 
 /** The chosen theme, remembered across launches. Reads are Compose state. */

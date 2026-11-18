@@ -31,11 +31,27 @@ function Wait-CodexComposerWritten([scriptblock]$read, [string]$expected, [int]$
 function Get-CodexQueueButtonNames { @('Queue', '加入队列', '排队') }
 function Get-CodexSteerButtonNames { @('Steer', '引导', '调整方向') }
 
-# With 后续消息 set to 引导 (26.1029), a running task's composer submit button
-# is itself named 引导. It sits on the composer's toolbar, at or below the
-# editor's top and within its width; a queued row's 引导 sits above it.
-function Test-CodexComposerSteerButton([double]$buttonX, [double]$buttonY, [double]$editorX, [double]$editorY, [double]$editorWidth) {
-  return ($buttonY -ge $editorY) -and ($buttonX -ge $editorX - 40) -and ($buttonX -le $editorX + $editorWidth + 120)
+# The toolbar belongs to the composer's parent, not to the edit field's
+# width. When an async question is open, the editor can shrink to 448 px while
+# its 引导 button remains at the far right of the 737 px parent. A queue row
+# or a question's own Send button above the editor must never be selected.
+function Test-CodexComposerActionButton(
+  [double]$buttonX, [double]$buttonY, [double]$buttonWidth, [double]$buttonHeight,
+  [double]$editorX, [double]$editorY, [double]$editorWidth,
+  [double]$parentX, [double]$parentY, [double]$parentWidth, [double]$parentHeight
+) {
+  if ($buttonWidth -le 0 -or $buttonHeight -le 0 -or $editorWidth -le 0 -or $parentWidth -le 0 -or $parentHeight -le 0) { return $false }
+  $right = $parentX + $parentWidth; $bottom = $parentY + $parentHeight
+  if ($editorX -lt $parentX -or $editorX + $editorWidth -gt $right + 2 -or $editorY -lt $parentY -or $editorY -gt $bottom) { return $false }
+  return $buttonY -ge $editorY -and $buttonX -ge $parentX -and $buttonY -ge $parentY -and
+    $buttonX + $buttonWidth -le $right + 2 -and $buttonY + $buttonHeight -le $bottom + 2
+}
+
+function Get-CodexComposerAction([string]$mode, [bool]$hasQueue, [bool]$hasSend, [bool]$hasSteer) {
+  if ($hasQueue) { return 'queue' }
+  if ($hasSend) { return 'send' }
+  if ($hasSteer) { if ($mode -eq 'queue') { return 'queue_unavailable' }; return 'steer' }
+  return 'missing'
 }
 
 function Get-CodexComposerIndex([string[]]$names) {

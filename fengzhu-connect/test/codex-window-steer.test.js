@@ -126,6 +126,53 @@ test('queue-only handoff starts immediately when Desktop is idle', async () => {
   assert.deepEqual(self.calls, ['thread/queue/delete']);
 });
 
+test('an explicit queue stays in the original protocol row while Desktop is running, then hands off once', async () => {
+  const self = fixture({ code: 'sent', delivery: 'confirmed' });
+  self.followups.get('m1').steerRequested = false;
+  self.desktopActivitySnapshotHealthy = true;
+  self.desktopActiveThreads = new Set(['thread-05']);
+  self.desktopStatuses = new Map([['thread-05', 'desktop_running']]);
+  self.retryPendingDesktopSettings = async () => {};
+  const request = self.codex.request;
+  self.codex.request = async (method, params) => method === 'thread/queue/list'
+    ? { data: [{ id: 'q-1', clientUserMessageId: 'm1' }] } : request(method, params);
+
+  const waiting = await self.steerFollowup('m1', 'phone', 'thread-05', { retainReceipt: true, queueOnly: true });
+  assert.equal(waiting.deferred, true);
+  assert.equal(self.followups.get('m1').codexQueueId, 'q-1');
+  assert.equal(self.followups.get('m1').windowQueueRequested, true);
+  assert.deepEqual(self.calls, []);
+  assert.equal(self.steered.length, 0);
+
+  // Desktop's active-list snapshot can omit a running task. Do not attempt
+  // a transfer while the rollout status still says this turn is running.
+  self.desktopActiveThreads.delete('thread-05');
+  self.followups.update('m1', { steerRetryAt: 0 });
+  await self.retryFollowups();
+  assert.deepEqual(self.calls, []);
+  assert.equal(self.steered.length, 0);
+
+  self.desktopStatuses.set('thread-05', 'completed');
+  self.followups.update('m1', { steerRetryAt: 0 });
+  await self.retryFollowups();
+  assert.deepEqual(self.calls, ['thread/queue/delete']);
+  assert.equal(self.steered.length, 1);
+  assert.equal(self.steered[0].mode, 'queue');
+  assert.equal(self.followups.get('m1').state, 'started');
+  assert.equal(self.events.filter(event => event.kind === 'followup.started').length, 1);
+  assert.equal(self.events.some(event => event.kind === 'steer.accepted'), false);
+});
+
+test('a send-now handoff which finds an idle Desktop emits a new-turn receipt', async () => {
+  const self = fixture({ code: 'sent', delivery: 'confirmed' });
+  const result = await self.steerFollowup('m1', 'phone', 'thread-05', { retainReceipt: true, queueOnly: false });
+  assert.equal(result.accepted, true);
+  assert.equal(self.followups.get('m1').desktopWindowSent, true);
+  assert.equal(self.events.filter(event => event.kind === 'followup.started').length, 1);
+  assert.equal(self.events.some(event => event.kind === 'steer.accepted'), false);
+});
+
+
 test('a lost protocol-delete receipt is uncertain and never writes to the window or adds another row', async () => {
   const self = fixture({ code: 'sent', delivery: 'confirmed' });
   self.codex.request = async method => { self.calls.push(method); throw new Error('lost delete receipt'); };
@@ -213,8 +260,17 @@ $no = @('发送消息？', '清空队列', '发送消息')
  actualPlaceholderDraft = Test-CodexComposerEmpty $true '和 Codex 一起工作' '和 Codex 一起工作' @('和 Codex 一起工作')
  mixedDraft = Test-CodexComposerEmpty $true '和 Codex 一起工作加字' '和 Codex 一起工作' @('和 Codex 一起工作', '')
  placeholderOnly = Test-CodexComposerEmpty $true '和 Codex 一起工作' '和 Codex 一起工作' @('和 Codex 一起工作', '')
- composerSteer = Test-CodexComposerSteerButton 1813 976 1155 848 682
- rowSteer = Test-CodexComposerSteerButton 1760 700 1155 848 682
+ composerSteer = Test-CodexComposerActionButton 1813 976 28 28 1155 848 682 1140 700 720 350
+ rowSteer = Test-CodexComposerActionButton 1760 700 28 28 1155 848 682 1140 700 720 350
+ narrowComposer = Test-CodexComposerActionButton 1464 870 28 28 805 866 448 764 647 737 259
+ questionSend = Test-CodexComposerActionButton 1464 750 28 28 805 866 448 764 647 737 259
+ outsideParent = Test-CodexComposerActionButton 1510 870 28 28 805 866 448 764 647 737 259
+ invalidParent = Test-CodexComposerActionButton 1464 870 28 28 805 866 448 1000 647 100 259
+ emptyButton = Test-CodexComposerActionButton 1464 870 0 28 805 866 448 764 647 737 259
+ queueWithSteerOnly = Get-CodexComposerAction 'queue' $false $false $true
+ immediateWithSteer = Get-CodexComposerAction 'steer' $false $false $true
+ explicitQueue = Get-CodexComposerAction 'queue' $true $false $false
+ idleSend = Get-CodexComposerAction 'queue' $false $true $false
 } | ConvertTo-Json -Compress
 `;
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
@@ -241,6 +297,17 @@ $no = @('发送消息？', '清空队列', '发送消息')
   // 后续消息 = 引导: the composer's own 引导 button, not a queued row's.
   assert.equal(result.composerSteer, true);
   assert.equal(result.rowSteer, false);
+  // Actual test-phone reproduction: the question narrows the editor, while the
+  // running turn's 引导 button remains at the edge of its wider parent.
+  assert.equal(result.narrowComposer, true);
+  assert.equal(result.questionSend, false);
+  assert.equal(result.outsideParent, false);
+  assert.equal(result.invalidParent, false);
+  assert.equal(result.emptyButton, false);
+  assert.equal(result.queueWithSteerOnly, 'queue_unavailable');
+  assert.equal(result.immediateWithSteer, 'steer');
+  assert.equal(result.explicitQueue, 'queue');
+  assert.equal(result.idleSend, 'send');
 });
 
 test('Windows composer waits through stale reads and preserves a complete multiline answer', { skip: process.platform !== 'win32' }, () => {
@@ -271,4 +338,90 @@ $exactBlank = Test-CodexComposerWritten 'corrupt' "甲\x60n\x60n乙" @('甲', ''
   assert.equal(result.stopped, false); assert.equal(result.partial, false);
   assert.equal(result.viaChildren, true); assert.equal(result.lostLine, false);
   assert.equal(result.missingBlank, false); assert.equal(result.exactBlank, true);
+});
+
+test('a started receipt during queue withdrawal or window preparation stops the next write', async () => {
+  for (const phase of ['withdraw', 'window']) {
+    const self = fixture({ code: 'unused' });
+    const rpc = self.codex.request;
+    self.codex.request = async (method, params) => {
+      const result = await rpc(method, params);
+      if (phase === 'withdraw' && method === 'thread/queue/delete') self.followups.remove('m1');
+      return result;
+    };
+    self.codexDesktopSteer.steer = async ({ canSubmit }) => {
+      assert.equal(phase, 'window');
+      assert.equal(canSubmit(), true);
+      self.followups.remove('m1');
+      assert.equal(canSubmit(), false);
+      return { code: 'task_identity_unconfirmed', delivery: 'not_sent' };
+    };
+    const receipt = await self.steerFollowup('m1', 'phone', 'thread-05', { retainReceipt: true });
+    assert.equal(receipt.duplicate, true);
+    assert.deepEqual(self.calls, ['thread/queue/delete']);
+  }
+});
+
+test('a replay arriving during send and after restart reuses the Codex phone request', async t => {
+  const fs = require('node:fs');
+  const { SendReceipts } = require('../src/send-receipts');
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'khlink-codex-receipt-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'receipts');
+  const self = fixture({ code: 'unused' });
+  self.sendReceipts = new SendReceipts(file);
+  let release, writes = 0;
+  self.command = () => { writes++; return new Promise(resolve => { release = resolve; }); };
+  const request = { requestId: 'replay', action: 'turn.start', args: { threadId: 'thread-05', text: '你好' } };
+  const { encryptJson, ready } = require('../src/crypto');
+  await ready();
+  self.config = { accountKey: require('node:crypto').randomBytes(32) };
+  self.defaultBackendId = 'codex';
+  self.inFlightCommands = new Set();
+  self.saveSequence = () => {};
+  const frame = JSON.stringify({ id: 'frame', kind: 'command', threadId: 'thread-05', sourceDeviceId: 'phone',
+    ...encryptJson(self.config.accountKey, 'command', 'thread-05', 'frame', request) });
+  const original = self.onFrame(frame);
+  await self.onFrame(frame);
+  assert.equal(self.events.at(-1).data.result.uncertain, true);
+  assert.equal(self.inFlightCommands.size, 1);
+  release({ accepted: true });
+  await original;
+  self.sendReceipts = new SendReceipts(file);
+  await self.onFrame(frame);
+  assert.equal(self.events.at(-1).data.result.duplicate, true);
+  assert.equal(self.events.at(-1).data.result.accepted, true);
+  // The phone may have been disconnected beyond the detailed receipt's retention.
+  self.sendReceipts.get('replay').createdAt = Date.now() - 8 * 86400_000;
+  self.sendReceipts.begin('another', 'codex', { threadId: 'thread-05', text: '另一条' });
+  self.sendReceipts = new SendReceipts(file);
+  assert.equal(self.sendReceipts.get('replay'), undefined);
+  await self.onFrame(frame);
+  assert.equal(self.events.at(-1).data.result.duplicate, true);
+  assert.equal(self.events.at(-1).data.result.accepted, true);
+  assert.equal(writes, 1);
+  assert.equal(self.inFlightCommands.size, 0);
+});
+
+test('Windows reads the delivery receipt again immediately before the submit click', { skip: process.platform !== 'win32' }, async t => {
+  const fs = require('node:fs');
+  const { CodexDesktopSteer } = require('../src/codex-desktop-steer');
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'khlink-before-click-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // Exercise the actual two-way pipe using the production receipt check, without opening a window.
+  const source = fs.readFileSync(path.join(__dirname, '../scripts/codex-desktop-steer.ps1'), 'utf8');
+  const check = source.slice(source.indexOf('function Out-Result'), source.indexOf('if ($ThreadId -notmatch'));
+  const script = path.join(dir, 'check.ps1');
+  fs.writeFileSync(script, [
+    'param($ThreadId, $TitleB64, $TextFile, $Mode, [switch]$CheckReceipt)', check,
+    'Confirm-RequestPending', 'Confirm-RequestPending', "Out-Result $true 'sent' 'confirmed' 'submitted'",
+  ].join('\n'));
+  const adapter = new CodexDesktopSteer({ script, tempDir: dir });
+  for (const expected of ['already_handled', 'sent']) {
+    let checks = 0;
+    const result = await adapter.steer({ threadId: 'test', title: 'test', text: 'test',
+      canSubmit: () => ++checks === 1 || expected === 'sent' });
+    assert.equal(checks, 2);
+    assert.equal(result.code, expected);
+  }
 });

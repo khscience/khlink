@@ -567,6 +567,15 @@ const methods = {
       case 'pi.start': return { running: true };
       // Relay providers (base URL, API type, models, prices). The API key is
       // write-only: listing never returns it, and an empty key on edit keeps it.
+      case 'pi.models.list': {
+        const recent = [...this.piThreads.entries()].find(([, entry]) => entry.cwd);
+        const catalog = this.piModelCache && Date.now() - this.piModelCache.at < MODEL_CACHE_MS
+          ? this.piModelCache.catalog : recent && await this.pi.modelCatalog(recent[0], recent[1].cwd).catch(() => null);
+        const entries = catalog?.models || (await this.pi.providers())?.providers?.flatMap(provider =>
+          (provider.models || []).map(model => ({ ...model, provider: provider.id }))) || [];
+        return { models: entries.filter(model => model.enabled !== false && model.provider && model.id)
+          .map(model => ({ id: `${model.provider}/${model.id}`, label: `${model.provider} · ${model.name || model.id}` })) };
+      }
       case 'pi.providers.list': return { providers: (await this.pi.providers())?.providers || [] };
       case 'pi.providers.save': {
         const input = args.provider || {};
@@ -595,11 +604,17 @@ const methods = {
       case 'thread.new':
       case 'thread.newWithTurn': {
         if (!args.cwd) throw new Error('请填写工作目录');
+        const slash = args.model ? String(args.model).indexOf('/') : -1;
+        if (args.model && (slash <= 0 || slash === args.model.length - 1)) throw new Error('请选择供应商和模型');
         const created = await this.pi.createSession(args.cwd);
         const newId = created?.id || created?.sessionId || created?.session?.id;
         if (!newId) throw new Error('PI WEB 没有返回新会话');
         this.piThreads.set(newId, { cwd: args.cwd, syncedCount: 0, name: '', updatedAt: Date.now() });
-        if (args.model && args.model.includes('/')) { const [provider, ...rest] = args.model.split('/'); await this.pi.setModel(newId, args.cwd, provider, rest.join('/')).catch((error) => this.log(error)); }
+        if (args.model) {
+          const status = await this.pi.setModel(newId, args.cwd, args.model.slice(0, slash), args.model.slice(slash + 1));
+          if (status?.model?.id && `${status.model.provider}/${status.model.id}` !== args.model) throw new Error('Pi 未选中指定模型，首条指令尚未发送');
+          this.piThreads.get(newId).model = args.model;
+        }
         if (hasText(args) || args.attachments?.length) { const { text, images } = this.piAttachmentParts(args); await this.pi.prompt(newId, args.cwd, text, undefined, images); this.watchPiTurn(newId); }
         else this.nudgePi();
         return { thread: { id: newId }, threadId: newId, backend: 'pi' };

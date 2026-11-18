@@ -18,7 +18,7 @@ class CodexDesktopSteer {
   }
 
   /** Resolves {code, delivery, message}: delivery is not_sent, confirmed or uncertain. */
-  steer({ threadId, title, text, mode = 'steer' }) {
+  steer({ threadId, title, text, mode = 'steer', canSubmit }) {
     if (!threadId || !String(title || '').trim() || !String(text || '').trim()) {
       return Promise.resolve({ code: 'missing_input', delivery: 'not_sent', message: '缺少任务标题或消息' });
     }
@@ -30,10 +30,25 @@ class CodexDesktopSteer {
     const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', this.script,
       '-ThreadId', threadId, '-TitleB64', Buffer.from(String(title).trim(), 'utf8').toString('base64'), '-TextFile', file, '-Mode', mode];
     return new Promise((resolve) => {
-      this.execFileFn('powershell.exe', args, { windowsHide: true, timeout: this.timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      if (canSubmit) args.push('-CheckReceipt');
+      const child = this.execFileFn('powershell.exe', args, { windowsHide: true, timeout: this.timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout) => {
         try { fs.unlinkSync(file); } catch {}
         resolve(parseSteerOutput(String(stdout || ''), error));
       });
+      if (canSubmit && child?.stdout) {
+        let buffered = '';
+        child.stdin.on('error', () => {}); // The window may close while its check is in flight.
+        child.stdout.on('data', chunk => {
+          buffered += chunk.toString();
+          const lines = buffered.split(/\r?\n/);
+          buffered = lines.pop();
+          for (const line of lines) if (line.trim() === '{"phase":"check_receipt"}') {
+            let decision = 'error';
+            try { decision = canSubmit() ? 'submit' : 'hold'; } catch { /* keep the draft for inspection */ }
+            child.stdin.write(decision + '\n');
+          }
+        });
+      }
     });
   }
 }

@@ -27,6 +27,16 @@ class FollowupFailureNoticesTest {
         assertTrue(notices.claim("task", failed, "task"))
         assertFalse(FollowupFailureNotices(notices.snapshot()).claim("task", failed, "task"))
     }
+    @Test fun provisionalCodexReceiptsStayInlineWhileARealFailureStillNotifies() {
+        val notices = FollowupFailureNotices()
+        val item = QueuedInstruction("one", "hello", 100, "uncertain")
+        assertTrue(showInstructionInQueue(item))
+        assertFalse(notices.claim("task", item, "task", "codex"))
+        assertFalse(notices.claim("task", item.copy(state = "started"), "task", "codex"))
+        assertTrue(notices.claim("task", item.copy(state = "failed"), "task", "codex"))
+        assertFalse(notices.claim("task", item.copy(state = "failed"), "task", "codex"))
+    }
+
     @Test fun confirmedReceiptCannotBeUndoneByALaterTimeout() {
         val started = QueuedInstruction("one", "hello", 100, "started", stateVersion = 1, blocking = false)
         val failure = started.copy(state = "uncertain", stateVersion = 10)

@@ -23,6 +23,26 @@ class CodexQuestionStateTest {
         assertFalse(submitCodexQuestionAnswer(q1, " ", emptyList()) { fail("blank answer"); true })
     }
 
+    @Test fun multipleQuestionsOfOneCallAreSentTogetherOnlyWhenAllAreAnswered() {
+        val other = q1.copy(id = "[\"request_user_input_async\",\"other_call\",0]")
+        assertEquals(listOf(listOf(q1, q2), listOf(other)), codexQuestionGroups(listOf(q1, other, q2)))
+        val sent = mutableListOf<String>()
+        val incomplete = mapOf(q1.id to "蓝色")
+        assertFalse(submitCodexQuestionAnswers(listOf(q1, q2), incomplete, emptyList()) { sent.add(it); true })
+        val complete = incomplete + (q2.id to " 自填回答 ")
+        assertTrue(submitCodexQuestionAnswers(listOf(q1, q2), complete, emptyList()) { sent.add(it); true })
+        assertEquals(listOf(QuestionReply(q1.id, q1.question, "蓝色"), QuestionReply(q2.id, q2.question, "自填回答")), parseQuestionReplies(sent.single()))
+        assertFalse(submitCodexQuestionAnswers(listOf(q2, q1), complete, emptyList()) { fail(); true })
+        assertFalse(submitCodexQuestionAnswers(listOf(q1, other), complete + (other.id to "绿色"), emptyList()) { fail(); true })
+        assertFalse(submitCodexQuestionAnswers(listOf(q1, q1), complete, emptyList()) { fail(); true })
+        for (state in listOf("pending", "uncertain", "failed", "started")) {
+            val outgoing = listOf(QueuedInstruction("request-1", sent.single(), 1_000, state))
+            assertFalse(submitCodexQuestionAnswers(listOf(q1, q2), complete, outgoing) { fail("duplicate $state"); true })
+            if (state != "started") assertEquals(setOf(q1.id, q2.id), pendingCodexAnswers(outgoing).keys)
+            else assertEquals(setOf(q1.id, q2.id), confirmedCodexAnswers(emptyList(), outgoing).keys)
+        }
+    }
+
     @Test fun pendingAttentionWinsOverToolHeartbeatsWithoutChangingExecutionState() {
         for (raw in listOf("desktop_running", "mobile_running", "running", "compacting")) {
             assertEquals("waiting_answer", codexQuestionDisplayStatus(raw, pending))

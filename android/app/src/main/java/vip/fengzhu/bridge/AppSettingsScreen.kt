@@ -4,7 +4,9 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings as AndroidSettings
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -33,6 +36,7 @@ import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Feedback
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.NotificationsActive
@@ -56,6 +60,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,6 +69,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
@@ -88,25 +94,31 @@ internal fun AppSettingsScreen(
     showPcLoad: Boolean = false, showPcLoadChanged: (Boolean) -> Unit = {},
     claudeStatusline: ClaudeStatuslineState? = null, claudeStatuslineChanged: (Boolean) -> Unit = {},
     autoDownloadUpdates: Boolean = true, autoDownloadUpdatesChanged: (Boolean) -> Unit = {},
+    computerScreen: ComputerScreenState? = null, computerOnline: Boolean = false, computerKeepAwakeChanged: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     var membershipDetails by rememberSaveable { mutableStateOf(false) }
+    var feedbackOpen by rememberSaveable { mutableStateOf(false) }
     val directMode = account?.effectiveSource == "direct"
     val notifications = remember { context.getSystemService(android.app.NotificationManager::class.java) }
     val notificationsEnabled = notifications?.areNotificationsEnabled() != false
     Dialog(close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceContainerLow) {
             Scaffold(topBar = {
-                TopAppBar(title = { Text("设置", fontWeight = FontWeight.SemiBold) }, navigationIcon = {
+                TopAppBar(title = { Column {
+                    Text("设置", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleLarge)
+                    Text("账户、偏好与支持", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow), navigationIcon = {
                     IconButton(close) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回首页") }
                 })
-            }) { padding ->
+            }, containerColor = MaterialTheme.colorScheme.surfaceContainerLow) { padding ->
                 Box(Modifier.fillMaxSize().padding(padding)) {
                     Column(Modifier.align(Alignment.TopCenter).widthIn(max = 640.dp).fillMaxSize()
-                        .verticalScroll(scrollState).padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                        Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = MaterialTheme.shapes.large) {
-                            Column(Modifier.fillMaxWidth().animateContentSize().padding(16.dp)) {
+                        .verticalScroll(scrollState).padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(22.dp)) {
+                        Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(22.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))) {
+                            Column(Modifier.fillMaxWidth().animateContentSize().padding(18.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     UserAvatar(account?.displayName ?: "KH", account?.avatarUrl, 48)
                                     Spacer(Modifier.width(14.dp))
@@ -124,30 +136,20 @@ internal fun AppSettingsScreen(
                                 // links and self-hosted servers are never counted.
                                 val traffic = account?.traffic
                                 if (v2 && !directMode && traffic != null) TrafficCard(traffic, member = account.effectiveSource != "free")
-                                if (v2 && !directMode) {
+                                val khlinkMembership = account?.memberships?.firstOrNull { it.product == "kh_link" }
+                                if (v2 && !directMode && khlinkMembership != null) {
                                     TextButton({ membershipDetails = !membershipDetails }, Modifier.fillMaxWidth()) {
                                         Text(if (membershipDetails) "收起会员详情" else "查看会员详情", Modifier.weight(1f))
                                         Icon(if (membershipDetails) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
                                     }
-                                    if (membershipDetails) {
-                                        // khLink is free (2026-11-06): no khLink VIP is sold, so
-                                        // its line shows only for an account that still has one.
-                                        listOf("khquant" to "khQuant VIP", "kh_link" to "khLink VIP").forEach { (product, name) ->
-                                            val membership = account?.memberships?.firstOrNull { it.product == product }
-                                            if (product == "kh_link" && membership == null) return@forEach
-                                            // A new account never had khQuant VIP, yet the site reports
-                                            // "expired" without an end date: that is "未开通".
-                                            val state = membership?.state.orEmpty().takeUnless { it == "expired" && (membership?.expiresAt ?: 0L) <= 0L }.orEmpty()
-                                            MembershipLine(name, membershipStateLabel(state), membershipExpiry(membership?.expiresAt))
-                                        }
-                                    }
+                                    if (membershipDetails) MembershipLine("khLink VIP", membershipStateLabel(khlinkMembership.state), membershipExpiry(khlinkMembership.expiresAt))
                                 }
                             }
                         }
                         SettingsGroup("显示与统计") {
                             Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    Icon(Icons.Default.BarChart, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                                    SettingsIcon(Icons.Default.BarChart)
                                     Column {
                                         Text("Token 显示单位", fontWeight = FontWeight.Medium)
                                         Text("适用于所有对话的用量统计", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -158,7 +160,7 @@ internal fun AppSettingsScreen(
                                         val chosen = unit == option
                                         Surface(Modifier.weight(1f).heightIn(min = 52.dp).selectable(chosen, role = Role.RadioButton) { unitChanged(option) },
                                             shape = MaterialTheme.shapes.medium,
-                                            color = if (chosen) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh) {
+                                            color = if (chosen) MaterialTheme.colorScheme.primary.copy(alpha = 0.13f) else MaterialTheme.colorScheme.surfaceContainerHigh) {
                                             Row(Modifier.padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                                                 RadioButton(chosen, onClick = null)
                                                 Column {
@@ -180,7 +182,7 @@ internal fun AppSettingsScreen(
                             SettingsDivider()
                             SettingsEntry(Icons.Default.Autorenew, "重新查看新手引导", "主题、智能体、提醒和后台运行", replayGuide)
                             SettingsDivider()
-                            SettingsEntry(Icons.Default.Psychology, "显示的 Agent", visibleHomeAgents(visibleAgents, agentOrder).joinToString(" · ") { homeTabLabel(it, 4) }, agentSettings)
+                            SettingsEntry(Icons.Default.Psychology, if (KhThemeState.current.chatLayout) "显示与排序" else "显示的 Agent", visibleHomeAgents(visibleAgents, agentOrder).joinToString(" · ") { homeTabLabel(it, 4) }, agentSettings)
                         }
                         SettingsGroup("连接与账号") {
                             SettingsEntry(Icons.Default.Psychology, "Claude 远程控制", if (claudeEnabled) "已开启 · 查看使用提示" else "未开启 · 阅读提示后开启", claudeNotice)
@@ -198,11 +200,16 @@ internal fun AppSettingsScreen(
                             if (directMode) { SettingsDivider(); SettingsEntry(Icons.Default.Autorenew, "返回账户连接", "恢复之前保存的账户会话", restoreServer) }
                             if (v2 && !directMode) {
                                 SettingsDivider()
-                                SettingsEntry(Icons.Default.Autorenew, "流量说明", "官方服务器每月免费流量，khQuant VIP 不限") {
+                                SettingsEntry(Icons.Default.Autorenew, "流量说明", "查看官方服务器的流量规则") {
                                     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PairingErrorMessage.MEMBERSHIP_URL)))
                                 }
                             }
                             if (!v2) { SettingsDivider(); SettingsEntry(Icons.Default.Build, "服务器密码", "修改登录这台服务器的密码", password) }
+                        }
+                        SettingsGroup("电脑屏幕") {
+                            SettingsSwitch(Icons.Default.Devices, "保持电脑屏幕唤醒", computerScreenSettingText(computerScreen, computerOnline),
+                                computerScreen?.keepAwake == true, computerKeepAwakeChanged,
+                                enabled = computerOnline && computerScreen?.supported == true)
                         }
                         SettingsGroup("任务与文件") {
                             SettingsEntry(Icons.Default.NotificationsActive, "任务通知", if (notificationsEnabled) "已开启 · 完成、审批与离线提醒" else "未开启 · 前往系统设置", {
@@ -219,6 +226,8 @@ internal fun AppSettingsScreen(
                             if (piSettings != null) { SettingsDivider(); SettingsEntry(Icons.Default.Settings, "Pi 设置", "中转服务商、接口地址与模型", piSettings) }
                         }
                         SettingsGroup("关于与支持") {
+                            SettingsEntry(Icons.Default.Feedback, "问题反馈", "提交问题或建议，可附上图片") { feedbackOpen = true }
+                            SettingsDivider()
                             SettingsEntry(Icons.Default.SystemUpdate, "检查更新", "当前版本 ${BuildConfig.VERSION_NAME}", update)
                             SettingsDivider()
                             SettingsSwitch(Icons.Default.Autorenew, "后台下载更新",
@@ -238,38 +247,63 @@ internal fun AppSettingsScreen(
             }
         }
     }
+    if (feedbackOpen) FeedbackScreen { feedbackOpen = false }
 }
 
 @Composable
 private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(title, Modifier.padding(start = 4.dp), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerLow) { Column(content = content) }
+        Row(Modifier.padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            Box(Modifier.size(width = 3.dp, height = 14.dp).clip(RoundedCornerShape(2.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)))
+            Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))) { Column(content = content) }
     }
 }
 
 @Composable
-private fun SettingsDivider() = HorizontalDivider(Modifier.padding(start = 60.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+private fun SettingsDivider() = HorizontalDivider(Modifier.padding(start = 68.dp, end = 14.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
 
 @Composable
-private fun SettingsSwitch(icon: ImageVector, title: String, subtitle: String, checked: Boolean, changed: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable { changed(!checked) }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
-        Spacer(Modifier.width(14.dp))
+private fun SettingsIcon(icon: ImageVector) {
+    Box(Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.11f)),
+        contentAlignment = Alignment.Center) {
+        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+    }
+}
+
+@Composable
+private fun SettingsSwitch(icon: ImageVector, title: String, subtitle: String, checked: Boolean, changed: (Boolean) -> Unit, enabled: Boolean = true) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(enabled = enabled) { changed(!checked) }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        SettingsIcon(icon)
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.width(8.dp))
-        Switch(checked, onCheckedChange = changed)
+        Switch(checked, onCheckedChange = changed, enabled = enabled)
     }
+}
+
+internal fun computerScreenSettingText(state: ComputerScreenState?, online: Boolean): String = when {
+    !online -> "电脑未连接，连接后可以设置"
+    state == null -> "等待电脑报告屏幕状态"
+    !state.supported -> "当前电脑暂不支持此功能"
+    state.wakeError -> "电脑未能应用设置，请检查电脑连接"
+    state.locked == null -> "电脑锁屏状态暂不可用，正在重新检测"
+    state.keepAwake && state.wakeActive == true -> "已开启 · 防止自动熄屏和休眠，系统仍可锁屏"
+    state.keepAwake -> "正在开启，等待电脑确认"
+    state.wakeActive == true -> "正在关闭，等待电脑确认"
+    else -> "未开启 · 开启后防止电脑自动熄屏和休眠"
 }
 
 @Composable
 private fun SettingsEntry(icon: ImageVector, title: String, subtitle: String, action: () -> Unit) {
     Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(onClick = action).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
-        Spacer(Modifier.width(14.dp))
+        SettingsIcon(icon)
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -303,10 +337,12 @@ private fun TrafficCard(traffic: TrafficUsage, member: Boolean) {
         }
         if (!member && traffic.free) LinearProgressIndicator(progress = { traffic.fraction }, Modifier.fillMaxWidth(),
             color = if (traffic.exhausted || traffic.fraction >= 0.8f) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
-        Text(when {
-            member -> "khQuant VIP 不限流量。只统计经官方服务器的数据，直连和自建服务器不计。"
-            traffic.exhausted -> "本月免费流量已用完，远程操作已暂停，$resets 恢复。直连和自建服务器不受影响。"
-            else -> "官方服务器每月免费 ${formatTraffic(traffic.limitBytes)}，$resets 重新计算；直连和自建服务器不计流量。"
-        }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(trafficExplanation(traffic, member, resets), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
+}
+
+internal fun trafficExplanation(traffic: TrafficUsage, hasUnlimitedAccess: Boolean, resets: String): String = when {
+    hasUnlimitedAccess -> "只统计经官方服务器的数据，直连和自建服务器不计。"
+    traffic.exhausted -> "本月免费流量已用完，远程操作已暂停，$resets 恢复。直连和自建服务器不受影响。"
+    else -> "官方服务器每月免费 ${formatTraffic(traffic.limitBytes)}，$resets 重新计算；直连和自建服务器不计流量。"
 }

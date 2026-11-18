@@ -51,6 +51,9 @@ internal fun directResumeTargets(hosts: List<String>, port: Int, broadcasts: Lis
 // The return path only carries an encrypted, one-use WebRTC answer. It never
 // receives an account token, password, master key, Agent command or file.
 internal object DirectSignaling {
+    const val NO_ACK = "未收到电脑的握手回执，请确认手机和电脑在同一 Wi-Fi 或热点，电脑连接码仍有效"
+    const val NO_CHANNEL = "电脑已回应，数据通道未建立。请检查局域网是否允许设备互访，然后重新连接"
+    const val NO_WELCOME = "数据通道已建立，电脑尚未确认会话。请检查电脑连接器状态，然后重新连接"
     data class Endpoint(val host: String, val port: Int)
 
     fun endpoints(offer: JSONObject): List<Endpoint> {
@@ -107,7 +110,7 @@ internal object DirectSignaling {
                 return
             }
         }
-        error("无法自动回传握手信息，请换用同一 Wi-Fi／热点或账户连接后重试")
+        throw SocketTimeoutException(NO_ACK)
     }
 
     /**

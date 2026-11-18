@@ -10,7 +10,7 @@
 核准、回答、下新指令，人不在電腦前，工作也不停。
 
 [![CI](https://github.com/khscience/khlink/actions/workflows/ci.yml/badge.svg)](https://github.com/khscience/khlink/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)](LICENSE)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-2563eb.svg)](LICENSE)
 ![Android](https://img.shields.io/badge/Android-7.0+-3ddc84?logo=android&logoColor=white)
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078d4)
 ![E2EE](https://img.shields.io/badge/端對端加密-XChaCha20--Poly1305-111827)
@@ -27,12 +27,12 @@
 
 ---
 
-## 完全免費，完全開源
+## 完全免費，原始碼公開
 
-手機 App、電腦端和中繼伺服器的原始碼全部公開（MIT）。三種連線方式功能相同，都不收費：
+手機 App、電腦端和中繼伺服器的原始碼全部公開，個人免費使用，禁止商用（見下方「授權」）。三種連線方式功能相同，都不收費：
 
 - **掃碼直連**：電腦上顯示一個 QR Code，手機掃一下就連上。不需要帳號，也不經過 khLink 伺服器。
-- **部署到自己的伺服器**：把開源的中繼服務部署到你自己的機器上，用伺服器密碼登入，不需要帳號。
+- **部署到自己的伺服器**：把公開原始碼的中繼服務部署到你自己的機器上，用伺服器密碼登入，不需要帳號。
 - **用我們的伺服器**：登入 khLink 帳號，裝好就用。每個帳號每月有 300 MB 免費流量，khQuant VIP 會員不限流量。khLink 不賣會員。
 
 不論哪種方式，內容都是端對端加密，中繼伺服器只看得到密文。
@@ -230,7 +230,7 @@ flowchart LR
 <details>
 <summary><b>khLink 要收費嗎？</b></summary>
 
-軟體免費，原始碼依 MIT 授權公開。掃碼直連和部署到自己的伺服器都不收費。官方伺服器也免費，每個帳號每月 300 MB 流量，khQuant VIP 會員不限流量。khLink 不賣會員，三種方式功能相同。
+軟體免費，原始碼公開，個人與非商業用途免費，禁止商用。掃碼直連和部署到自己的伺服器都不收費。官方伺服器也免費，每個帳號每月 300 MB 流量，khQuant VIP 會員不限流量。khLink 不賣會員，三種方式功能相同。
 </details>
 
 <details>
@@ -318,7 +318,11 @@ cd desktop-adapter && cargo test
 
 ## 授權
 
-[MIT](LICENSE)。`docs/kh-link-*.md` 中的條款只適用於官方服務與官方安裝檔。
+khLink 自 2026-11-18 起以 [PolyForm Noncommercial License 1.0.0](LICENSE) 授權：可免費用於個人學習、研究及其他非商業用途，**禁止任何商業用途**；商用授權請聯絡作者。這類「禁止商用」的授權不屬於嚴格意義上的開源授權，所以我們稱為「原始碼公開」。
+
+本專案最初基於 Linco Talk 的 [linco-bridge](https://github.com/lincotalk/linco-bridge)（MIT 授權），來自上游的程式碼仍依 MIT 授權，見 [LICENSE-UPSTREAM-MIT](LICENSE-UPSTREAM-MIT)。2026-11-18 之前發布的版本仍依當時的 MIT 授權。
+
+`docs/kh-link-*.md` 中的條款只適用於官方服務與官方安裝檔。
 
 ## 致謝
 

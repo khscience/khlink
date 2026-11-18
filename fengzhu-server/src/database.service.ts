@@ -1,5 +1,6 @@
 import { ConflictException, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common'
 import Database from 'better-sqlite3'
+import { measureStorage, type StorageStats } from './storage-stats'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -8,9 +9,12 @@ import type { AccountDevice, AccountProfile, AuthDevice, DeviceType, EncryptedFr
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private db!: Database.Database
+  /** The database file, for readers outside this connection (storage statistics). */
+  path = ''
 
   onModuleInit(): void {
     const path = process.env.SQLITE_PATH || join(process.cwd(), 'data', 'fengzhu-bridge.db')
+    this.path = path
     mkdirSync(dirname(path), { recursive: true })
     this.db = new Database(path)
     this.db.pragma('journal_mode = WAL')
@@ -87,6 +91,28 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       CREATE TABLE IF NOT EXISTS account_traffic_v2 (
         account_id TEXT NOT NULL, month TEXT NOT NULL, bytes INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
         PRIMARY KEY(account_id, month)
+      );
+      -- Daily content traffic per account (Beijing days), counted from 2026-11-13.
+      CREATE TABLE IF NOT EXISTS account_traffic_daily_v2 (
+        day TEXT NOT NULL, account_id TEXT NOT NULL, bytes INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(day, account_id)
+      );
+      -- The same traffic split by device (from 2026-11-14): what each device sent
+      -- (up) and what the relay delivered to it (down).
+      CREATE TABLE IF NOT EXISTS account_traffic_device_daily_v2 (
+        day TEXT NOT NULL, account_id TEXT NOT NULL, device_id TEXT NOT NULL,
+        up_bytes INTEGER NOT NULL DEFAULT 0, down_bytes INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(day, account_id, device_id)
+      );
+      -- The same traffic split by what it was for (from 2026-11-15): live frame
+      -- kinds ("ws.command.result"), history uploads and reads, event catch-up.
+      -- "large" categories hold the share of history rows of 100 KB or more
+      -- (mostly images); the rows are end-to-end encrypted, so size is all the
+      -- relay can tell. requests counts frames or HTTP requests.
+      CREATE TABLE IF NOT EXISTS account_traffic_category_daily_v2 (
+        day TEXT NOT NULL, account_id TEXT NOT NULL, category TEXT NOT NULL,
+        up_bytes INTEGER NOT NULL DEFAULT 0, down_bytes INTEGER NOT NULL DEFAULT 0, requests INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(day, account_id, category)
       );
       CREATE TABLE IF NOT EXISTS account_events_v2 (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, id TEXT NOT NULL,
@@ -488,12 +514,81 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     return row?.bytes || 0
   }
 
-  addAccountTraffic(rows: { accountId: string; month: string; bytes: number }[]): void {
+  addAccountTraffic(rows: { accountId: string; month: string; day?: string; bytes: number }[]): void {
     const now = Date.now()
     const add = this.db.prepare(`INSERT INTO account_traffic_v2(account_id,month,bytes,updated_at) VALUES(?,?,?,?)
       ON CONFLICT(account_id,month) DO UPDATE SET bytes=bytes+excluded.bytes, updated_at=excluded.updated_at`)
-    this.db.transaction(() => { for (const row of rows) add.run(row.accountId, row.month, row.bytes, now) })()
+    const daily = this.db.prepare(`INSERT INTO account_traffic_daily_v2(day,account_id,bytes) VALUES(?,?,?)
+      ON CONFLICT(day,account_id) DO UPDATE SET bytes=bytes+excluded.bytes`)
+    this.db.transaction(() => { for (const row of rows) { add.run(row.accountId, row.month, row.bytes, now); if (row.day) daily.run(row.day, row.accountId, row.bytes) } })()
   }
+
+  addDeviceTraffic(rows: { accountId: string; deviceId: string; day: string; up: number; down: number }[]): void {
+    const add = this.db.prepare(`INSERT INTO account_traffic_device_daily_v2(day,account_id,device_id,up_bytes,down_bytes) VALUES(?,?,?,?,?)
+      ON CONFLICT(day,account_id,device_id) DO UPDATE SET up_bytes=up_bytes+excluded.up_bytes, down_bytes=down_bytes+excluded.down_bytes`)
+    this.db.transaction(() => { for (const row of rows) add.run(row.day, row.accountId, row.deviceId, row.up, row.down) })()
+  }
+
+  addCategoryTraffic(rows: { accountId: string; category: string; day: string; up: number; down: number; requests: number }[]): void {
+    const add = this.db.prepare(`INSERT INTO account_traffic_category_daily_v2(day,account_id,category,up_bytes,down_bytes,requests) VALUES(?,?,?,?,?,?)
+      ON CONFLICT(day,account_id,category) DO UPDATE SET up_bytes=up_bytes+excluded.up_bytes, down_bytes=down_bytes+excluded.down_bytes, requests=requests+excluded.requests`)
+    this.db.transaction(() => { for (const row of rows) add.run(row.day, row.accountId, row.category, row.up, row.down, row.requests) })()
+  }
+
+  /** What the given accounts' traffic over days `fromDay`..`toDay` was for, largest first. */
+  categoryTraffic(accountIds: string[], fromDay: string, toDay: string): Array<{ accountId: string; category: string; upBytes: number; downBytes: number; requests: number }> {
+    if (!accountIds.length) return []
+    const marks = accountIds.map(() => '?').join(',')
+    return this.db.prepare(`SELECT account_id AS accountId, category, SUM(up_bytes) AS upBytes, SUM(down_bytes) AS downBytes, SUM(requests) AS requests
+      FROM account_traffic_category_daily_v2 WHERE account_id IN (${marks}) AND day>=? AND day<=?
+      GROUP BY account_id, category ORDER BY SUM(up_bytes)+SUM(down_bytes) DESC`).all(...accountIds, fromDay, toDay) as never
+  }
+
+  /** Per-device traffic of the given accounts over days `fromDay`..`toDay`, with each day's split; largest device first. */
+  deviceTraffic(accountIds: string[], fromDay: string, toDay: string): Array<{ accountId: string; deviceId: string; name: string | null; type: string | null;
+    revoked: boolean; upBytes: number; downBytes: number; days: Array<{ day: string; upBytes: number; downBytes: number }> }> {
+    if (!accountIds.length) return []
+    const marks = accountIds.map(() => '?').join(',')
+    const rows = this.db.prepare(`SELECT t.account_id AS accountId, t.device_id AS deviceId, t.day, t.up_bytes AS upBytes, t.down_bytes AS downBytes,
+        d.name, d.type, d.revoked_at AS revokedAt
+      FROM account_traffic_device_daily_v2 t LEFT JOIN account_devices_v2 d ON d.account_id=t.account_id AND d.id=t.device_id
+      WHERE t.account_id IN (${marks}) AND t.day>=? AND t.day<=? ORDER BY t.day`).all(...accountIds, fromDay, toDay) as Array<{ accountId: string; deviceId: string; day: string
+        upBytes: number; downBytes: number; name: string | null; type: string | null; revokedAt: number | null }>
+    const devices = new Map<string, ReturnType<DatabaseService['deviceTraffic']>[number]>()
+    for (const row of rows) {
+      const key = `${row.accountId}
+${row.deviceId}`
+      let device = devices.get(key)
+      if (!device) devices.set(key, device = { accountId: row.accountId, deviceId: row.deviceId, name: row.name, type: row.type, revoked: !!row.revokedAt, upBytes: 0, downBytes: 0, days: [] })
+      device.upBytes += row.upBytes; device.downBytes += row.downBytes
+      device.days.push({ day: row.day, upBytes: row.upBytes, downBytes: row.downBytes })
+    }
+    return [...devices.values()].sort((a, b) => (b.upBytes + b.downBytes) - (a.upBytes + a.downBytes))
+  }
+
+  /** Relay-wide traffic per day from `fromDay` on: totals and how many accounts used it. */
+  dailyTraffic(fromDay: string): Array<{ day: string; bytes: number; accounts: number }> {
+    return this.db.prepare(`SELECT day, SUM(bytes) AS bytes, COUNT(*) AS accounts FROM account_traffic_daily_v2
+      WHERE day>=? GROUP BY day ORDER BY day`).all(fromDay) as Array<{ day: string; bytes: number; accounts: number }>
+  }
+
+  /** Relay traffic for the admin site: one month's accounts (largest first) and monthly totals. */
+  adminTraffic(month: string, offset = 0, limit = 50): {
+    accounts: Array<{ id: string; khQuantSubject: string; displayName: string; usedBytes: number; updatedAt: number }>
+    total: number; usedBytes: number; months: Array<{ month: string; usedBytes: number; accounts: number }>; limit: number; offset: number
+  } {
+    const safeLimit = Math.min(100, Math.max(1, Math.trunc(Number(limit) || 50)))
+    const safeOffset = Math.max(0, Math.trunc(Number(offset) || 0))
+    const accounts = this.db.prepare(`SELECT a.id,a.khquant_subject AS khQuantSubject,a.display_name AS displayName,t.bytes AS usedBytes,t.updated_at AS updatedAt
+      FROM account_traffic_v2 t JOIN accounts_v2 a ON a.id=t.account_id WHERE t.month=? ORDER BY t.bytes DESC, a.id LIMIT ? OFFSET ?`).all(month, safeLimit, safeOffset) as never
+    const totals = this.db.prepare('SELECT COUNT(*) n, COALESCE(SUM(bytes),0) bytes FROM account_traffic_v2 WHERE month=?').get(month) as { n: number; bytes: number }
+    const months = this.db.prepare(`SELECT month, SUM(bytes) AS usedBytes, COUNT(*) AS accounts FROM account_traffic_v2
+      GROUP BY month ORDER BY month DESC LIMIT 12`).all() as Array<{ month: string; usedBytes: number; accounts: number }>
+    return { accounts, total: totals.n, usedBytes: totals.bytes, months, limit: safeLimit, offset: safeOffset }
+  }
+
+  /** Measures stored bytes inline: slow on a large database, so the relay runs it in a worker (StorageStatsCache). */
+  adminStorage(): StorageStats { return measureStorage(this.db) }
 
   listEntitlements(accountId: string): StoredEntitlement[] {
     return this.db.prepare(`SELECT account_id AS accountId,product,state,plan,expires_at AS expiresAt,
@@ -596,12 +691,15 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     return Number(result.lastInsertRowid)
   }
 
-  listAccountEvents(accountId: string, deviceId: string, after: number, limit: number): EncryptedFrame[] {
+  /** `skipConnectorSources`: leave out what connectors sent (a connector catching up never uses another connector's frames). */
+  listAccountEvents(accountId: string, deviceId: string, after: number, limit: number, skipConnectorSources = false): EncryptedFrame[] {
     return this.db.prepare(`SELECT sequence,id,source_device_id AS sourceDeviceId,target_device_id AS targetDeviceId,
-      kind,thread_id AS threadId,nonce,ciphertext,created_at AS createdAt FROM account_events_v2
+      kind,thread_id AS threadId,nonce,ciphertext,created_at AS createdAt FROM account_events_v2 e
       WHERE account_id=? AND sequence>? AND source_device_id<>?
-      AND (target_device_id IS NULL OR target_device_id=?) ORDER BY sequence LIMIT ?`)
-      .all(accountId, after, deviceId, deviceId, limit) as EncryptedFrame[]
+      AND (target_device_id IS NULL OR target_device_id=?)
+      AND NOT (? AND EXISTS (SELECT 1 FROM account_devices_v2 d WHERE d.account_id=e.account_id AND d.id=e.source_device_id AND d.type='connector'))
+      ORDER BY sequence LIMIT ?`)
+      .all(accountId, after, deviceId, deviceId, skipConnectorSources ? 1 : 0, limit) as EncryptedFrame[]
   }
 
   latestAccountEventSequence(accountId: string): number {

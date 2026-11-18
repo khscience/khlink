@@ -5,14 +5,17 @@ import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.Transaction
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "cached_threads")
 data class CachedThread(
@@ -22,7 +25,7 @@ data class CachedThread(
     val ciphertext: String,
 )
 
-@Entity(tableName = "cached_items", primaryKeys = ["threadId", "id"])
+@Entity(tableName = "cached_items", primaryKeys = ["threadId", "id"], indices = [Index(value = ["threadId", "itemOrder"])])
 data class CachedItem(
     val threadId: String,
     val id: String,
@@ -49,6 +52,29 @@ data class LightDetail(
     val fetchedAt: Long,
 )
 
+// Large encrypted image details do not fit in Android's CursorWindow as a
+// single row. Split the ciphertext for the local cache, never the plaintext.
+@Entity(tableName = "light_detail_parts", primaryKeys = ["threadId", "id", "partIndex"])
+data class LightDetailCachePart(
+    val threadId: String,
+    val id: String,
+    val partIndex: Int,
+    val ciphertext: String,
+)
+
+internal const val LIGHT_DETAIL_CACHE_PART_CHARS = 512 * 1024
+
+internal fun joinLightDetailCacheParts(parts: List<LightDetailCachePart>): String? {
+    if (parts.isEmpty()) return null
+    val out = StringBuilder()
+    for ((index, part) in parts.withIndex()) {
+        if (part.partIndex != index || part.ciphertext.isEmpty() || part.ciphertext.length > LIGHT_DETAIL_CACHE_PART_CHARS ||
+            out.length + part.ciphertext.length > MAX_LIGHT_DETAIL_CHARS) return null
+        out.append(part.ciphertext)
+    }
+    return out.toString()
+}
+
 @Entity(tableName = "drafts")
 data class DraftEntry(
     @PrimaryKey val threadId: String,
@@ -72,6 +98,8 @@ data class PendingCommandEntry(
     val createdAt: Long,
 )
 
+private const val LATEST_CACHE_ROWS = "SELECT * FROM cached_items WHERE threadId=:threadId AND length(ciphertext) <= :maxCiphertextChars ORDER BY itemOrder DESC LIMIT :limit"
+
 @Dao
 interface CacheDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putThreads(items: List<CachedThread>)
@@ -81,8 +109,12 @@ interface CacheDao {
     // CursorWindow. Keep oversized rows out of the offline cache read; the
     // repository will still load them from the server when the connection is
     // available instead of showing a fatal "Row too big" dialog.
-    @Query("SELECT * FROM cached_items WHERE threadId=:threadId AND length(ciphertext) <= :maxCiphertextChars ORDER BY itemOrder DESC LIMIT :limit")
+    @Query(LATEST_CACHE_ROWS)
     suspend fun items(threadId: String, limit: Int, maxCiphertextChars: Int): List<CachedItem>
+    @Query("SELECT * FROM cached_items WHERE threadId=:threadId AND itemOrder<:before AND length(ciphertext)<=:maxCiphertextChars ORDER BY itemOrder DESC LIMIT :limit")
+    suspend fun itemsBefore(threadId: String, before: Long, limit: Int, maxCiphertextChars: Int): List<CachedItem>
+    @Query(LATEST_CACHE_ROWS)
+    fun observeLatestItems(threadId: String, limit: Int, maxCiphertextChars: Int): Flow<List<CachedItem>>
     @Query("DELETE FROM cached_items WHERE threadId=:threadId") suspend fun deleteItems(threadId: String)
     @Query("SELECT MAX(itemOrder) FROM cached_items WHERE threadId=:threadId") suspend fun maxItemOrder(threadId: String): Long?
     @Query("DELETE FROM cached_threads WHERE id=:threadId") suspend fun deleteThread(threadId: String)
@@ -97,10 +129,51 @@ interface CacheDao {
     @Query("SELECT * FROM pending_commands ORDER BY createdAt ASC") suspend fun pendingCommands(): List<PendingCommandEntry>
     @Query("DELETE FROM pending_commands WHERE id=:id") suspend fun deletePendingCommand(id: String)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putLightDetails(items: List<LightDetail>)
-    @Query("SELECT * FROM light_details WHERE threadId=:threadId") suspend fun lightDetails(threadId: String): List<LightDetail>
+    @Query("SELECT threadId, id, itemOrder, nonce, CASE WHEN length(ciphertext) > :inlineLimit THEN '' ELSE ciphertext END AS ciphertext, fetchedAt FROM light_details WHERE threadId=:threadId")
+    suspend fun lightDetails(threadId: String, inlineLimit: Int): List<LightDetail>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putLightDetailParts(items: List<LightDetailCachePart>)
+    @Query("SELECT * FROM light_detail_parts WHERE threadId=:threadId AND id=:id ORDER BY partIndex")
+    suspend fun lightDetailParts(threadId: String, id: String): List<LightDetailCachePart>
+    @Query("DELETE FROM light_detail_parts WHERE threadId=:threadId AND id=:id") suspend fun deleteLightDetailParts(threadId: String, id: String)
+    @Query("SELECT length(ciphertext) FROM light_details WHERE threadId=:threadId AND id=:id LIMIT 1") suspend fun lightDetailLength(threadId: String, id: String): Int?
+    @Query("SELECT substr(ciphertext, :start, :count) FROM light_details WHERE threadId=:threadId AND id=:id LIMIT 1")
+    suspend fun lightDetailSlice(threadId: String, id: String, start: Int, count: Int): String?
+
+    @Transaction
+    suspend fun saveLightDetails(items: List<LightDetail>) {
+        for (item in items) {
+            deleteLightDetailParts(item.threadId, item.id)
+            if (item.ciphertext.length <= LIGHT_DETAIL_CACHE_PART_CHARS) {
+                putLightDetails(listOf(item))
+            } else {
+                putLightDetails(listOf(item.copy(ciphertext = "")))
+                putLightDetailParts(item.ciphertext.chunked(LIGHT_DETAIL_CACHE_PART_CHARS).mapIndexed { index, part ->
+                    LightDetailCachePart(item.threadId, item.id, index, part)
+                })
+            }
+        }
+    }
+
+    @Transaction
+    suspend fun completeLightDetails(threadId: String): List<LightDetail> = lightDetails(threadId, LIGHT_DETAIL_CACHE_PART_CHARS).mapNotNull { row ->
+        if (row.ciphertext.isNotEmpty()) return@mapNotNull row
+        val split = joinLightDetailCacheParts(lightDetailParts(threadId, row.id))
+        if (split != null) return@mapNotNull row.copy(ciphertext = split)
+        // Versions before 0.1.341 stored large rows as a single TEXT value.
+        // Read them through bounded SQLite substrings rather than discarding them.
+        val length = lightDetailLength(threadId, row.id) ?: return@mapNotNull null
+        if (length !in 1..MAX_LIGHT_DETAIL_CHARS) return@mapNotNull null
+        val full = StringBuilder(length)
+        while (full.length < length) {
+            val part = lightDetailSlice(threadId, row.id, full.length + 1, LIGHT_DETAIL_CACHE_PART_CHARS) ?: return@mapNotNull null
+            if (part.isEmpty()) return@mapNotNull null
+            full.append(part)
+        }
+        row.copy(ciphertext = full.toString())
+    }
 }
 
-@Database(entities = [CachedThread::class, CachedItem::class, DraftEntry::class, PendingCommandEntry::class, LightDetail::class], version = 5, exportSchema = false)
+@Database(entities = [CachedThread::class, CachedItem::class, DraftEntry::class, PendingCommandEntry::class, LightDetail::class, LightDetailCachePart::class], version = 7, exportSchema = false)
 abstract class BridgeDatabase : RoomDatabase() {
     abstract fun cache(): CacheDao
     companion object {
@@ -125,12 +198,24 @@ abstract class BridgeDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE cached_items ADD COLUMN createdAt INTEGER NOT NULL DEFAULT 0")
             }
         }
+        private val migration5To6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS light_detail_parts (threadId TEXT NOT NULL, id TEXT NOT NULL, partIndex INTEGER NOT NULL, ciphertext TEXT NOT NULL, PRIMARY KEY(threadId, id, partIndex))")
+            }
+        }
+        internal val migration6To7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_cached_items_threadId_itemOrder ON cached_items(threadId, itemOrder)")
+            }
+        }
         fun get(context: Context): BridgeDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context, BridgeDatabase::class.java, "fengzhu-cache.db")
                 .addMigrations(migration1To2)
                 .addMigrations(migration2To3)
                 .addMigrations(migration3To4)
                 .addMigrations(migration4To5)
+                .addMigrations(migration5To6)
+                .addMigrations(migration6To7)
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING).build().also { instance = it }
         }
     }

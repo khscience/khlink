@@ -209,8 +209,10 @@ def cmd_list():
               "last_activity_at", "parent_session_id", "pinned", "archived", "hidden", "model", "cwd",
               "transcript_revision", "profile_name", "tool_call_count"]
     cols = [c for c in wanted if c in have]
+    # Older stores (Hermes v0.19 on Windows) have no last_activity_at.
+    order = "coalesce(last_activity_at, started_at)" if "last_activity_at" in have else "started_at"
     rows = conn.execute(
-        "select %s from sessions order by coalesce(last_activity_at, started_at) desc limit ?" % ",".join(cols),
+        "select %s from sessions order by %s desc limit ?" % (",".join(cols), order),
         (LIST_LIMIT * 3,)).fetchall()
     cache = {}
     merged = {}
@@ -299,6 +301,85 @@ def cmd_messages(root, after, limit):
     print(json.dumps({"root": root, "segments": segs, "messages": out}, ensure_ascii=False))
 
 
+def cmd_usage(root, today_from, month_from):
+    # Session totals have no per-call time. Only attribute a segment to a
+    # window if the entire segment began inside it; crossing segments are
+    # explicitly partial. Compression lineage follows the existing chat view.
+    conn = connect()
+    conn.execute("begin")
+    have = columns(conn, "sessions")
+    names = ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"]
+    if not set(names + ["started_at", "ended_at"]).issubset(have):
+        print(json.dumps({"status": "unavailable", "reason": "此 Hermes 版本没有可读取的会话用量"}, ensure_ascii=False))
+        return
+    segs = lineage(conn, root, reset_continuations(conn))
+    if not segs or not conn.execute("select 1 from sessions where id=?", (root,)).fetchone():
+        print(json.dumps({"status": "unavailable", "reason": "没有找到此 Hermes 对话"}, ensure_ascii=False))
+        return
+    marks = ",".join("?" for _ in segs)
+    rows = conn.execute("select " + ",".join(names) + ",started_at,ended_at from sessions where id in (" + marks + ")", segs).fetchall()
+    starts = {"today": int(today_from), "month": int(month_from)}
+    sums = {"today": 0, "month": 0, "all": 0}
+    partial = {"today": False, "month": False, "all": False}
+    observed = 0
+    counts = {name: 0 for name in names}
+    for row in rows:
+        values = [row[n] for n in names]
+        if any(not isinstance(v, int) or v < 0 or v > 9007199254740991 for v in values):
+            partial = {k: True for k in partial}
+            continue
+        total = sum(values)
+        if total > 9007199254740991:
+            partial = {k: True for k in partial}
+            continue
+        observed += 1
+        sums["all"] += total
+        for name, value in zip(names, values):
+            counts[name] += value
+        started = int((row["started_at"] or 0) * 1000)
+        ended = int((row["ended_at"] or 0) * 1000)
+        for key, cutoff in starts.items():
+            if started >= cutoff:
+                sums[key] += total
+            elif not ended or ended >= cutoff or not started:
+                partial[key] = True
+    if not observed:
+        print(json.dumps({"status": "unavailable", "reason": "此对话没有可读取的 Token 记录"}, ensure_ascii=False))
+        return
+    result = {"todayFrom": starts["today"], "monthFrom": starts["month"]}
+    result.update({key: {"total": sums[key], "partial": partial[key]} for key in sums})
+    totals = {"input": counts["input_tokens"] + counts["cache_read_tokens"] + counts["cache_write_tokens"],
+              "output": counts["output_tokens"], "cacheRead": counts["cache_read_tokens"],
+              "cacheWrite": counts["cache_write_tokens"], "total": sums["all"]}
+    print(json.dumps({"status": "ready", "periods": result, "totals": totals}, ensure_ascii=False))
+
+
+def cmd_models():
+    # Ask the same local inventory used by the ACP picker, without probing a
+    # provider or creating an empty ACP session. Older installs may lack it.
+    models = {}
+    try:
+        from hermes_cli.inventory import build_models_payload, load_picker_context
+        context = load_picker_context()
+        payload = build_models_payload(context, explicit_only=True, include_unconfigured=False,
+                                      picker_hints=False, canonical_order=True, pricing=False,
+                                      capabilities=False, refresh=False, probe_custom_providers=False,
+                                      probe_current_custom_provider=False, max_models=100)
+        for provider in payload.get("providers") or []:
+            slug = provider.get("slug")
+            if not slug:
+                continue
+            for row in provider.get("models") or []:
+                model = (row.get("id") or row.get("model") or row.get("name")) if isinstance(row, dict) else row
+                if isinstance(model, str) and model:
+                    models[f"{slug}:{model}"] = f"{provider.get('name') or slug} · {model}"
+        if context.current_provider and context.current_model:
+            models.setdefault(f"{context.current_provider}:{context.current_model}", context.current_model)
+    except (ImportError, AttributeError, TypeError, ValueError):
+        pass
+    print(json.dumps({"models": [{"id": k, "label": v} for k, v in models.items()]}, ensure_ascii=False))
+
+
 def main(argv):
     # The connector reads the output as UTF-8. Python otherwise writes the
     # locale's encoding, which on Windows (cp1252, the CI runner) cannot
@@ -306,11 +387,16 @@ def main(argv):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     command = argv[1] if len(argv) > 1 else ""
+    if command == "models":
+        cmd_models()
+        return
     if not os.path.exists(DB):
         print(json.dumps({"error": "no-state-db"}))
         return
     if command == "list":
         cmd_list()
+    elif command == "usage":
+        cmd_usage(argv[2], argv[3], argv[4])
     elif command == "messages":
         cmd_messages(argv[2], argv[3] if len(argv) > 3 else 0, argv[4] if len(argv) > 4 else 400)
     else:

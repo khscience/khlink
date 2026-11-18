@@ -189,6 +189,16 @@ test('state polling and an explicit account refresh leave unchanged rows in plac
   assert.equal(target.children[0], first); assert.equal(target.children[0].children[2].textContent, '解除绑定');
 });
 
+test('account view does not expose khQuant membership status or source', async () => {
+  const profile = { displayName: '测试账户', khQuantSubject: 'test' };
+  const a = app({ account: () => ({ profile, devices: [], entitlements: [{ product: 'khquant', state: 'active', expiresAt: 1900000000000 }],
+    effectiveEntitlement: { canWrite: true, source: 'khquant' } }) }, state({ authenticated: true, profile }));
+  await a.run('load()'); await tick(); await a.run('loadAccount()');
+  assert.equal(a.elements.get('effective-badge').textContent, 'khLink 可用');
+  assert.equal(a.elements.has('khquant-state'), false);
+  assert.equal(a.elements.has('khquant-expiry'), false);
+});
+
 test('server response order does not reshuffle devices with the same online state', () => {
   const a = app();
   a.run(`desktopState = ${JSON.stringify(state({ authenticated: true }))}; renderDevices([

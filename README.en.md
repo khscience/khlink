@@ -10,7 +10,7 @@ The Codex, Claude Code and other agent sessions running on your computer, brough
 Approve, answer, send new instructions. You're away from the desk, and the work keeps going.
 
 [![CI](https://github.com/khscience/khlink/actions/workflows/ci.yml/badge.svg)](https://github.com/khscience/khlink/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)](LICENSE)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-2563eb.svg)](LICENSE)
 ![Android](https://img.shields.io/badge/Android-7.0+-3ddc84?logo=android&logoColor=white)
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078d4)
 ![E2EE](https://img.shields.io/badge/E2EE-XChaCha20--Poly1305-111827)
@@ -27,12 +27,12 @@ Approve, answer, send new instructions. You're away from the desk, and the work 
 
 ---
 
-## Completely free, fully open source
+## Completely free, source available
 
-The source of the phone app, the PC side and the relay server is all public (MIT). The three ways to connect have the same features, and none of them costs anything:
+The source of the phone app, the PC side and the relay server is all public, free for personal use, with commercial use prohibited (see "License" below). The three ways to connect have the same features, and none of them costs anything:
 
 - **QR direct link**: the PC shows a QR code, the phone scans it, and you're connected. No account, and nothing goes through khLink servers.
-- **Your own server**: deploy the open-source relay on your own machine and sign in with a server password. No account needed.
+- **Your own server**: deploy the source-available relay on your own machine and sign in with a server password. No account needed.
 - **Our server**: sign in to a khLink account and go. Every account gets 300 MB of free traffic each month, and khQuant VIP members have no limit. khLink does not sell memberships.
 
 Whichever you pick, content is end-to-end encrypted; a relay only ever sees ciphertext.
@@ -230,7 +230,7 @@ Wire format and encryption: [protocol/v1.md](protocol/v1.md).
 <details>
 <summary><b>Does khLink cost money?</b></summary>
 
-The software is free and the source is public under the MIT license. The QR direct link and your own server cost nothing. The official server is free too: 300 MB of traffic per account each month, and khQuant VIP members have no limit. khLink does not sell memberships, and all three ways have the same features.
+The software is free and the source is public; personal and noncommercial use is free, and commercial use is prohibited. The QR direct link and your own server cost nothing. The official server is free too: 300 MB of traffic per account each month, and khQuant VIP members have no limit. khLink does not sell memberships, and all three ways have the same features.
 </details>
 
 <details>
@@ -318,7 +318,11 @@ Issues and PRs are welcome; please read [CONTRIBUTING.md](CONTRIBUTING.md) first
 
 ## License
 
-[MIT](LICENSE). The terms in `docs/kh-link-*.md` apply only to the official service and the official installers.
+Since 2026-11-18 khLink is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE): free for personal study, research and other noncommercial use; **any commercial use is prohibited**. Contact the author for a commercial license. A noncommercial license is not open source in the strict sense, so we call it "source available".
+
+khLink was originally based on Linco Talk's [linco-bridge](https://github.com/lincotalk/linco-bridge) (MIT). Code from upstream remains under MIT; see [LICENSE-UPSTREAM-MIT](LICENSE-UPSTREAM-MIT). Versions released before 2026-11-18 remain under the MIT License they shipped with.
+
+The terms in `docs/kh-link-*.md` apply only to the official service and the official installers.
 
 ## Acknowledgements
 

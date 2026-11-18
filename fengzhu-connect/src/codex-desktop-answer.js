@@ -99,14 +99,18 @@ class CodexDesktopAnswer {
     this.execFileFn = execFileFn; this.script = script; this.tempDir = tempDir; this.timeoutMs = timeoutMs;
   }
 
-  answer({ threadId, title, question, answer }) {
+  answer({ threadId, title, question, answer, questions, answers, asynchronous = false }) {
     const file = path.join(this.tempDir, `khlink-codex-answer-${crypto.randomUUID()}.json`);
-    const data = { threadId, title, question: question.question, labels: question.options.map((o) => o.label),
-      answer: answer.value, custom: answer.custom, skip: ['跳过', 'Skip'], submit: ['提交', 'Submit'] };
+    const group = questions && answers ? questions.map((q, i) => ({ question: q.question,
+      labels: q.options.map(o => o.label), answer: answers[i]?.value, custom: answers[i]?.custom })) : null;
+    const first = group?.[0] || { question: question.question, labels: question.options.map(o => o.label), answer: answer.value, custom: answer.custom };
+    const submit = asynchronous ? ['发送', 'Send', '发送更新', 'Send update'] : ['提交', 'Submit'];
+    const data = { threadId, title, ...first, group, asynchronous, skip: ['跳过', 'Skip'], submit, finalSubmit: submit,
+      nextSubmit: ['下一步', '下一题', '下一个', 'Next', 'Continue'] };
     fs.writeFileSync(file, JSON.stringify(data), { encoding: 'utf8', mode: 0o600 });
     return new Promise((resolve) => {
       this.execFileFn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', this.script, '-InputFile', file],
-        { windowsHide: true, timeout: this.timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+        { windowsHide: true, timeout: group ? Math.max(this.timeoutMs, 60_000) : this.timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout) => {
           try { fs.unlinkSync(file); } catch {}
           resolve(parseSteerOutput(String(stdout || ''), error));
         });

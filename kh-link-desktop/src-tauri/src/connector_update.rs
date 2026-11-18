@@ -303,6 +303,42 @@ fn text(value: &Value, key: &str) -> String {
         .to_string()
 }
 
+/// What the offered version and every version since `current` change, newest
+/// first, from the manifest entry's per-version `history`. With more than one
+/// version each one starts with a "【version】" line; without history (an
+/// older manifest) it is the entry's own notes.
+pub fn notes_since(entry: &Value, current: &str) -> String {
+    let latest = text(entry, "version");
+    let own = text(entry, "notes");
+    let Some(history) = entry.get("history").and_then(Value::as_array) else { return own };
+    let mut groups: Vec<(String, String)> = history
+        .iter()
+        .filter_map(|row| {
+            let version = text(row, "version");
+            let notes = text(row, "notes");
+            let wanted = !version.is_empty()
+                && !notes.trim().is_empty()
+                && (current.is_empty() || newer(&version, current))
+                && !newer(&version, &latest);
+            wanted.then_some((version, notes))
+        })
+        .collect();
+    groups.sort_by(|a, b| if newer(&a.0, &b.0) { std::cmp::Ordering::Less } else if newer(&b.0, &a.0) { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal });
+    if current.is_empty() { groups.truncate(1); }
+    if !groups.iter().any(|(version, _)| *version == latest) && !own.trim().is_empty() {
+        groups.insert(0, (latest.clone(), own.clone()));
+    }
+    match groups.len() {
+        0 => own,
+        1 => groups.remove(0).1,
+        _ => groups
+            .iter()
+            .map(|(version, notes)| format!("【{version}】\n{notes}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
 pub fn check() -> Result<Value, String> {
     let desktop = env!("CARGO_PKG_VERSION");
     let (manifest, mirror_ok) = fetch_manifest()?;
@@ -316,10 +352,10 @@ pub fn check() -> Result<Value, String> {
         "latest": latest_desktop,
         "available": newer(&latest_desktop, desktop),
         "url": desktop_url,
-        "notes": text(&manifest["windowsDesktop"], "notes"),
+        "notes": notes_since(&manifest["windowsDesktop"], desktop),
     });
     let Some(dir) = bundled_dir().filter(|dir| task_runs(dir)) else {
-        return Ok(json!({ "bundled": false, "latest": text(connector, "version"), "notes": text(connector, "notes"), "desktop": desktop_view }));
+        return Ok(json!({ "bundled": false, "latest": text(connector, "version"), "notes": notes_since(connector, ""), "desktop": desktop_view }));
     };
     let installed = text(&read_package(&dir)?, "version");
     let latest = text(connector, "version");
@@ -328,7 +364,7 @@ pub fn check() -> Result<Value, String> {
         "installed": installed,
         "latest": latest,
         "available": !latest.is_empty() && newer(&latest, &installed),
-        "notes": text(connector, "notes"),
+        "notes": notes_since(connector, &installed),
         "desktop": desktop_view,
     }))
 }
@@ -570,6 +606,23 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn notes_list_every_version_since_the_installed_one() {
+        let entry = serde_json::json!({
+            "version": "0.2.166", "notes": "Hermes 能用了",
+            "history": [
+                { "version": "0.2.166", "notes": "Hermes 能用了" },
+                { "version": "0.2.165", "notes": "反重力 2.32\n切模型" },
+                { "version": "0.2.164", "notes": "Mac 连接器" },
+            ],
+        });
+        assert_eq!(super::notes_since(&entry, "0.2.164"), "【0.2.166】\nHermes 能用了\n【0.2.165】\n反重力 2.32\n切模型");
+        assert_eq!(super::notes_since(&entry, "0.2.165"), "Hermes 能用了");
+        assert_eq!(super::notes_since(&entry, ""), "Hermes 能用了");
+        let old = serde_json::json!({ "version": "0.2.166", "notes": "只有这一版" });
+        assert_eq!(super::notes_since(&old, "0.2.100"), "只有这一版");
+    }
+
     use super::*;
 
     #[test]

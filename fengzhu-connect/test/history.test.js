@@ -134,6 +134,12 @@ test('extracts imageGeneration JSON emitted inside a tool output', () => {
   assert.deepEqual(extractInlineImages(output), [{ data: `data:image/webp;base64,${base64}`, mimeType: 'image/webp' }]);
 });
 
+test('retains four generated images whose combined size narrowly exceeds the old limit', () => {
+  const sizes = [1_550_668, 2_130_600, 2_434_220, 1_962_404];
+  const input = sizes.map((size, index) => ({ type: 'input_image', image_url: `data:image/png;base64,${String.fromCharCode(65 + index).repeat(size)}` }));
+  assert.equal(extractInlineImages(input).length, 4);
+});
+
 test('normalizes Codex function_call_output images as imageGeneration', () => {
   const data = `data:image/png;base64,${'d'.repeat(32)}`;
   const normalized = normalizeItems({ id: 't', turns: [{ createdAt: 1, items: [{

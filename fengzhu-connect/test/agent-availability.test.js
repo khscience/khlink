@@ -141,3 +141,30 @@ test('Codex in the tray and a windowless Antigravity count as open; the process 
   queries[1](null);
   assert.deepEqual(connector.desktopAppsRunning(now + 41_000), { codex: true, antigravity: true }, 'a failed query keeps the last answer');
 });
+
+test('installed agents on a Mac: Windows-only agents count only while online, and the system is reported', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'khlink-installed-mac-'));
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, DSH_HOME: process.env.DSH_HOME };
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  try {
+    Object.assign(process.env, { HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'Roaming'), LOCALAPPDATA: path.join(home, 'Local') });
+    delete process.env.DSH_HOME;
+    for (const dir of ['.dsh', '.pi', path.join('.gemini', 'antigravity')]) fs.mkdirSync(path.join(home, dir), { recursive: true });
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    const connector = Object.create(Connector.prototype);
+    connector.codexMissing = false;
+    connector.hermesTransport = { transport: 'local' };
+    assert.deepEqual(connector.agentInstalledPayload(1_000), { codex: true, claude: false, dsh: false, hermes: true, pi: false, antigravity: false });
+    connector.piOnline = true;
+    assert.equal(connector.agentInstalledPayload(70_000).pi, true);
+    connector.config = { deviceName: 'mac' }; connector.desktopStatuses = new Map();
+    assert.deepEqual(connector.presencePayload(1).system, { platform: 'darwin', home: os.homedir(), hermes: null });
+  } finally {
+    Object.defineProperty(process, 'platform', platform);
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

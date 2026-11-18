@@ -926,8 +926,11 @@ const methods = {
       fs.writeFileSync(answersFile, JSON.stringify(labels.map(String)), { encoding: 'utf8', mode: 0o600 });
       args.push('-AnswersFile', answersFile);
     }
+    // Windows PowerShell, which every Windows has: PowerShell 7 ("pwsh") is
+    // often missing, and the approval then failed with "spawn pwsh ENOENT"
+    // (user report, 2026-11-14). The script is saved with a BOM for it.
     let stdout; let stderr;
-    try { ({ stdout, stderr } = await (this.dshExecFile || execFileAsync)(process.env.DSH_PWSH || 'pwsh', args, { timeout: 25_000 + 5_000 * (labels?.length || 0), windowsHide: true })); }
+    try { ({ stdout, stderr } = await (this.dshExecFile || execFileAsync)(process.env.DSH_PWSH || 'powershell.exe', args, { timeout: 25_000 + 5_000 * (labels?.length || 0), windowsHide: true })); }
     finally { if (answersFile) fs.rm(answersFile, { force: true }, () => {}); }
     const lines = String(stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     let result;
@@ -972,6 +975,12 @@ const methods = {
     // project there.
     const cwd = meta?.cwd || normalizeDshCwd(args.cwd);
     switch (action) {
+      case 'dsh.models.list': {
+        const catalog = await this.dsh.modelCatalog();
+        const models = (catalog?.groups || []).flatMap(group => (group.models || []).map(model =>
+          ({ id: `${group.id}/${model.id}`, label: `${group.name || group.id} · ${model.name || model.id}` })));
+        return { models };
+      }
       case 'history.sync': {
         await this.pollDsh(id || null);
         return { synced: true, threadId: id, backend: 'dsh' };
@@ -979,12 +988,21 @@ const methods = {
       case 'thread.new':
       case 'thread.newWithTurn': {
         if (!cwd) throw new Error('请填写工作目录');
+        const slash = args.model ? String(args.model).indexOf('/') : -1;
+        if (args.model && (slash <= 0 || slash === args.model.length - 1)) throw new Error('请选择供应商和模型');
         const created = await this.dsh.create({ cwd, agentPreset: args.agentPreset || undefined });
         const sessionId = created?.sessionId;
         if (!sessionId) throw new Error('DeepSeek Harness 没有返回新会话');
         const newId = threadIdOf(sessionId);
         this.dshThreads.set(newId, { sessionId, cwd, syncedSeq: -1, title: '', updatedAt: Date.now(), itemsSchema: ITEMS_SCHEMA });
         this.saveDshThreads();
+        if (args.model) {
+          const result = await this.dsh.selectModel(sessionId, { provider: args.model.slice(0, slash), model: args.model.slice(slash + 1) });
+          const selected = result?.selected;
+          if (selected && `${selected.provider}/${selected.model}` !== args.model) throw new Error('DSH 未选中指定模型，首条指令尚未发送');
+          this.dshThreads.get(newId).model = args.model;
+          this.saveDshThreads();
+        }
         if (String(args.text || '').trim() || args.attachments?.length) {
           const parts = this.dshAttachmentParts(args);
           await this.dsh.prompt(sessionId, { text: parts.text, images: parts.images, requestId: payload.requestId || args.requestId || crypto.randomUUID(), mode: 'queue' });
@@ -1060,7 +1078,10 @@ const methods = {
       case 'thread.settings.read': {
         const catalog = await this.dsh.modelCatalog().catch(() => null);
         const permissionCatalog = await this.dsh.permissionCatalog().catch(() => null);
-        return { backend: 'dsh', settings: { model: meta?.model || '', effort: meta?.effort || '', permissionMode: meta?.permissionMode || '' }, catalog, permissionCatalog };
+        const settings = { model: meta?.model || '', effort: meta?.effort || '', permissionMode: meta?.permissionMode || '' };
+        // The phone reads a command result's settings from its top level (the
+        // thread.settings event nests them); give both, or its sheet ticks the defaults.
+        return { backend: 'dsh', ...settings, settings, catalog, permissionCatalog };
       }
       case 'settings.set': {
         if (!meta) throw new Error('没有找到这个 DeepSeek 会话');

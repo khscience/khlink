@@ -104,7 +104,9 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .membership-row p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
 .runtime-row { min-height: 37px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); font-size: 12px; }
 .runtime-row strong { color: var(--muted); font-size: 11px; }
-.update-notes { margin: 0 0 8px; padding: 8px 10px 8px 24px; border-radius: 8px; background: var(--surface-alt, rgba(0,0,0,.03)); color: var(--muted); font-size: 12px; line-height: 1.6; }
+.update-notes { margin: 0 0 8px; padding: 8px 10px 8px 24px; border-radius: 8px; background: var(--surface-alt, rgba(0,0,0,.03)); color: var(--muted); font-size: 12px; line-height: 1.6; max-height: 220px; overflow-y: auto; }
+.update-notes .update-version { list-style: none; margin: 6px 0 2px -14px; color: var(--ink); font-weight: 600; }
+.update-notes .update-version:first-child { margin-top: 0; }
 #update-row #update-label { color: var(--ink); }
 #update-button { color: var(--accent-dark); font-weight: 600; }
 #update-button:disabled { color: var(--muted); cursor: default; }

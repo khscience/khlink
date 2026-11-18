@@ -8,13 +8,14 @@
 #                      -ExpectFile <first question text> -RequestId <native id>
 #   -Kind plan       -Choice accept|accept_auto|reject|revise [-FeedbackFile <text>]
 #   -Kind offer      -Choice new|here  -ExpectFile <the suggested session's title>
+#   -Kind branch     -Choice new|stay  -ExpectFile <the suggested branch name>
 #
 # Safety: the prompt on screen must be the one the phone showed, otherwise
 # nothing is touched. Afterwards the prompt must be gone.
 # Output: one JSON line {ok, reason?}.
 param(
   [Parameter(Mandatory = $true)][string]$SessionId,
-  [ValidateSet('permission', 'question', 'plan', 'offer', 'inspect')][string]$Kind = 'permission',
+  [ValidateSet('permission', 'question', 'plan', 'offer', 'branch', 'inspect')][string]$Kind = 'permission',
   [string]$Choice = '',
   [string]$ExpectFile = '',
   [string]$PromptFile = '',
@@ -119,7 +120,7 @@ function Permission-Snapshot($group) {
   $texts = @($group.FindAll($TS::Descendants, $cond) | ForEach-Object { [string]$_.Current.Name })
   # Whether the dialog offers "Allow and switch to Auto" at all (an MCP tool's
   # request has no allow menu): the phone then does not offer it.
-  $auto = [bool](Button-Named $group '^(?:More allow options$|Allow and switch to Auto)')
+  $auto = [bool](Button-Named $group '^(?:More allow options$|Allow and switch to Auto\b)')
   return @{ desktopId = $SessionId; name = $group.Current.Name; texts = $texts; auto = $auto }
 }
 function Same-Permission($actual, $expected) {
@@ -390,6 +391,40 @@ if ($Kind -eq 'offer') {
   if (-not $found) { Finish $false 'prompt_not_found' }
   $cardId = $found.card.GetRuntimeId()
   Invoke-Button $found.button
+  $same = { Find-All (Root) $CT::Group | Where-Object { [System.Windows.Automation.Automation]::Compare($_.GetRuntimeId(), $cardId) } | Select-Object -First 1 }
+  $gone = Wait-For { -not (& $same) } 40
+  if ($gone) { Finish $true $null } else { Finish $false 'prompt_still_open' }
+}
+
+# ---- branch: "Work on a separate branch?" (New branch <name> / Stay on the
+# current branch, then Continue). Asked before a session edits a git repo.
+# The "New branch" choice must name the branch the phone showed.
+if ($Kind -eq 'branch') {
+  if ($Choice -notin @('new', 'stay')) { Finish $false 'bad_choice' }
+  $want = & $norm $permissionKey
+  if ($Choice -eq 'new' -and -not $want) { Finish $false 'nothing_to_verify' }
+  $findCard = {
+    $cards = @(Find-All (Root) $CT::Group | Where-Object { (& $norm $_.Current.Name) -match '^Work on a separate branch\?' -and (Button-Named $_ '^Continue$') })
+    if ($cards.Count -eq 1) { return $cards[0] }
+    return $null
+  }
+  $card = Wait-For $findCard 40
+  if (-not $card) { Finish $false 'prompt_not_found' }
+  $radios = @(Find-All $card $CT::RadioButton)
+  $newRadio = @($radios | Where-Object { (& $norm $_.Current.Name) -match '^New branch ' })
+  $stayRadio = @($radios | Where-Object { (& $norm $_.Current.Name) -match '^Stay on the current branch' })
+  if ($newRadio.Count -ne 1 -or $stayRadio.Count -ne 1) { Finish $false 'option_not_found' }
+  if ($want -and -not ((& $norm $newRadio[0].Current.Name) -ceq "New branch $want")) { Finish $false 'prompt_mismatch' (& $norm $newRadio[0].Current.Name) }
+  $target = if ($Choice -eq 'new') { $newRadio[0] } else { $stayRadio[0] }
+  $selected = { try { $target.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected } catch { $false } }
+  if (-not (& $selected)) {
+    try { $target.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() } catch { Invoke-Button $target }
+    if (-not (Wait-For $selected 20)) { Finish $false 'option_not_set' }
+  }
+  $continue = Button-Named $card '^Continue$'
+  if (-not $continue) { Finish $false 'button_not_found' }
+  $cardId = $card.GetRuntimeId()
+  Invoke-Button $continue
   $same = { Find-All (Root) $CT::Group | Where-Object { [System.Windows.Automation.Automation]::Compare($_.GetRuntimeId(), $cardId) } | Select-Object -First 1 }
   $gone = Wait-For { -not (& $same) } 40
   if ($gone) { Finish $true $null } else { Finish $false 'prompt_still_open' }

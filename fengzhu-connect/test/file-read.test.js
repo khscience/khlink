@@ -17,6 +17,9 @@ test('file.read sends a binary chunk once-encoded to phones that ask for it and 
     const chunk = connector.readFile({ path: file, offset: 512 * 1024, binary: true });
     assert.equal(chunk.data, undefined); assert.equal(chunk.size, 188 * 1024); assert.equal(chunk.eof, true);
     assert.deepEqual(chunk[FILE_BLOB], bytes.subarray(512 * 1024));
+    // The phone compares this with its cached copy (a file edited since is fetched again).
+    assert.equal(chunk.modifiedAt, Math.round(fs.statSync(file).mtimeMs));
+    assert.equal(chunk.total, 700 * 1024);
     const sent = []; const key = Buffer.alloc(32, 5);
     connector.config = { accountKey: key }; connector.ws = { readyState: 1, send: (raw) => sent.push(JSON.parse(raw)) };
     connector.send('file.result', null, { requestId: 'r1', ok: true, result: chunk }, 'phone');

@@ -21,7 +21,10 @@ class KhLinkSkinCatalogTest {
 
     @Test
     fun themesAreListedInTheChosenOrderAndEachLooksDifferent() {
-        assertEquals(listOf("sand", "codex", "minimal", "wechat"), KhLinkSkinCatalog.all.map { it.id })
+        assertEquals(listOf("sand", "codex", "warm_code", "minimal", "wechat"), KhLinkSkinCatalog.all.map { it.id })
+        assertEquals(KhLinkSkinCatalog.studio, KhLinkSkinCatalog.byId("warm_code"))
+        assertTrue(KhLinkSkinCatalog.studio.studioLayout)
+        assertFalse(KhLinkSkinCatalog.studio.codexLayout)
         // Minimal is not just the default theme in grey: it drops the cards.
         assertTrue(KhLinkSkinCatalog.minimal.flatLayout)
         assertFalse(KhLinkSkinCatalog.sand.flatLayout)

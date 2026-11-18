@@ -20,10 +20,10 @@ internal fun shouldShowCommandFailure(action: String?): Boolean =
 
 // Requests whose screen shows the failure itself (the computer-file dialog
 // says why a file could not be opened); a second, global dialog repeated it.
-private val SHOWN_BY_CALLER = setOf("file.read", "file.historyDetailPart", "history.details")
+private val SHOWN_BY_CALLER = setOf("file.read", "file.historyDetailPart", "history.details", "pi.models.list", "dsh.models.list", "hermes.models.list")
 
-/** Pi and Antigravity have no per-thread settings to read; DSH has its own dialog. */
-internal fun backendHasThreadSettings(backend: String?): Boolean = backend != "pi" && backend != "antigravity"
+/** Pi has no per-thread settings to read (its dialog asks PI WEB); DSH has its own dialog. */
+internal fun backendHasThreadSettings(backend: String?): Boolean = backend != "pi"
 
 // These commands may have reached the computer before their ACK was lost.
 // A timeout provides no proof of rejection for any agent; showing "failed,

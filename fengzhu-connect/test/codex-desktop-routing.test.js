@@ -78,7 +78,7 @@ test('an ordinary Desktop text starts immediately when the actual window is idle
   assert.deepEqual(calls, ['thread/queue/add', 'thread/queue/delete']);
 });
 
-test('a structured async answer uses steer and retains the exact question envelope', async () => {
+test('an invalid async question identity is never typed into the Desktop composer', async () => {
   const self = fixture(); const calls = []; const windowRequests = [];
   self.desktopAdapter = { probe: async () => ({ code: 'task_active' }) };
   self.codex.request = async (method, params) => {
@@ -88,9 +88,9 @@ test('a structured async answer uses steer and retains the exact question envelo
   self.codexDesktopSteer = { steer: async value => { windowRequests.push(value); return { code: 'steer_accepted', delivery: 'confirmed' }; } };
   const answer = '<send_user_message_question_reply>\n[{"questionItemId":"题目","question":"想去哪？","answer":"公园"}]\n</send_user_message_question_reply>';
   const result = await self.command({ ...request({ text: answer }), action: 'turn.steer' }, 'phone');
-  assert.equal(result.accepted, true); assert.equal(windowRequests[0].mode, 'steer');
-  assert.equal(windowRequests[0].text, answer);
-  assert.deepEqual(calls, ['thread/queue/add', 'thread/queue/delete']);
+  assert.equal(result.failed, true);
+  assert.equal(self.followups.get('once').displayText, answer);
+  assert.deepEqual(windowRequests, []); assert.deepEqual(calls, []);
 });
 
 test('a legacy nonblocking queue row is repaired by positive queue presence, without resending it', async () => {

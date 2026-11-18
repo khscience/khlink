@@ -6,3 +6,9 @@ releases/update-manifest.sig.b64 text eol=lf
 # Linux backup entry points must survive a Windows checkout unchanged.
 ops/backup.sh text eol=lf
 ops/fengzhu-agent-bridge-backup.service text eol=lf
+
+# Feedback service files are copied from Windows to Linux during deployment.
+feedback-service/* text eol=lf
+
+# The macOS connector script runs under bash on a Mac.
+fengzhu-connect/scripts/khlink-macos.sh text eol=lf

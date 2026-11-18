@@ -89,6 +89,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Settings
@@ -96,10 +97,16 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material.icons.outlined.Calculate
+import androidx.compose.material.icons.outlined.Explore
+import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.outlined.RocketLaunch
 import androidx.compose.material.icons.outlined.AddCircleOutline
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.filled.Add
@@ -108,6 +115,7 @@ import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.UnfoldMore
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.RadioButtonChecked
@@ -199,6 +207,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.produceState
@@ -206,6 +216,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -259,6 +270,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownTypography
 import com.journeyapps.barcodescanner.ScanContract
@@ -270,6 +282,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.PI
@@ -282,6 +295,10 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -296,8 +313,9 @@ private val P: KhPalette get() = KhThemeState.current.palette
 /** The chat-app layout (bottom tabs, avatar rows, bubbles) of the chosen theme. */
 private val ChatLayout: Boolean get() = KhThemeState.current.chatLayout
 private val CodexLayout: Boolean get() = KhThemeState.current.codexLayout
+private val StudioLayout: Boolean get() = KhThemeState.current.studioLayout
 // Flat rows and document-like messages: the Codex theme and the minimal one.
-private val FlatLayout: Boolean get() = KhThemeState.current.codexLayout || KhThemeState.current.flatLayout
+private val FlatLayout: Boolean get() = KhThemeState.current.codexLayout || KhThemeState.current.flatLayout || StudioLayout
 private val Ink: Color get() = P.ink
 private val Accent: Color get() = P.accent
 private val Warm: Color get() = P.warm
@@ -404,7 +422,7 @@ private fun DirectAccountSuggestionDialog(useAccount: () -> Unit, keepWaiting: (
         title = { Text("直连一直连不上") },
         text = {
             Text("已经重试了好几次，还是连不上电脑。可能是电脑重启过、换了网络，或者当前网络不支持直连。\n\n" +
-                "建议改用 khLink 账号登录，通过官方服务器中继连接，在哪儿都能连上，更稳定。每月有免费流量，khQuant VIP 不限。")
+                "建议改用 khLink 账号登录，通过官方服务器中继连接，在哪儿都能连上，更稳定。每月有免费流量。")
         },
         confirmButton = { TextButton(useAccount) { Text("用账号登录", color = Accent, fontWeight = FontWeight.SemiBold) } },
         dismissButton = { TextButton(keepWaiting) { Text("继续等待直连") } },
@@ -512,6 +530,7 @@ private fun OnboardingTheme(tryIt: () -> Unit) {
                     }
                 }
             }
+            if (pair.size == 1) Spacer(Modifier.weight(1f))
         }
     }
     // A sample conversation in the picked theme, so the choice shows at once
@@ -1021,9 +1040,10 @@ private fun HomeScreen(vm: BridgeViewModel) {
     }
     var claudeNotice by rememberSaveable { mutableStateOf(false) }
     val accountsAvailable by vm.accountsAvailable.collectAsState()
-    val agentAccounts by vm.agentAccounts.collectAsState()
-    var accountBackend by rememberSaveable { mutableStateOf<String?>(null) }
     val liveStatuses by vm.liveStatuses.collectAsState()
+    val conversationUsage by vm.conversationUsage.collectAsState()
+    val completionTimes by vm.completionTimes.collectAsState()
+    val knownCompletions = remember(completionTimes, conversationUsage) { knownCompletionTimes(completionTimes, conversationUsage) }
     val visibleAgents by vm.visibleAgents.collectAsState()
     val agentOpenStates by vm.agentOpenStates.collectAsState()
     val agentSnapshots by vm.agentOpenStatesByConnector.collectAsState()
@@ -1033,6 +1053,10 @@ private fun HomeScreen(vm: BridgeViewModel) {
     val notInstalled: (String) -> Boolean = { agent ->
         (connectorId?.let { agentInstalled[it] } ?: agentInstalled.values.singleOrNull())?.get(agent) == false
     }
+    val computerSystems by vm.computerSystemByConnector.collectAsState()
+    // Never borrow another computer's report: an older connector sends none,
+    // and a Windows computer must not get a Mac's folders.
+    val selectedSystem = if (connectorId.isNullOrBlank()) computerSystems.values.singleOrNull() else computerSystems[connectorId]
     val connectorSeenAt = vm.connectorSeenAt.collectAsState()
     val agentOrder by vm.agentOrder.collectAsState()
     val agentTabs = normalizeHomeAgentOrder(agentOrder)
@@ -1076,8 +1100,8 @@ private fun HomeScreen(vm: BridgeViewModel) {
         if (!claudeConsent.enabled && allThreads.any { it.id == selectedId && it.backend == "claude" }) { vm.closeTask(); selectedId = null; homeBackend = "claude" }
     }
     LaunchedEffect(accountsAvailable, homeBackend, connection, connectorId) {
-        // 2026-10-18: Claude Desktop account switching is temporarily closed.
-        // Only the read-only Codex account list is polled from the phone.
+        // Keep detecting Codex account changes made on the computer so the
+        // phone refreshes the conversation and quota after a switch.
         if (accountsAvailable && connection == ConnectionState.Online && homeBackend == "codex") {
             while (true) {
                 if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) vm.refreshAgentAccounts(homeBackend).join()
@@ -1085,7 +1109,6 @@ private fun HomeScreen(vm: BridgeViewModel) {
             }
         }
     }
-    accountBackend?.let { backend -> if (backend == "codex") AgentAccountsDialog(vm, backend) { accountBackend = null } else accountBackend = null }
     LaunchedEffect(visibleAgents, agentOrder) {
         if (homeBackend !in agentTabs) {
             homeBackend = agentTabs.firstOrNull { agentStates[it] == HomeAgentState.Open } ?: agentTabs.first()
@@ -1157,6 +1180,7 @@ private fun HomeScreen(vm: BridgeViewModel) {
         }
     }
     LaunchedEffect(connection) { if (connection == ConnectionState.Online) { vm.capabilities(showError = false); vm.backendCapabilities() } }
+    LaunchedEffect(create, connectorId) { if (create && connection == ConnectionState.Online) vm.backendCapabilities() }
     // The open conversation's computer is the chosen one, so going back lands
     // in its list and new work goes to the same computer.
     LaunchedEffect(selectedId, allThreads, multiPc) {
@@ -1171,6 +1195,13 @@ private fun HomeScreen(vm: BridgeViewModel) {
     // One scroll position per tab.
     val listStates = remember { HashMap<String, LazyListState>() }
     val haptics = rememberHaptics()
+    var completionSortEnabled by rememberSaveable { mutableStateOf(false) }
+    val pinsToRead = threads.filter { !it.archived && it.pinned && backendTab(it.backend) == homeBackend }
+    val pinReadIds = pinsToRead.map { it.id }.sorted()
+    LaunchedEffect(completionSortEnabled, homeBackend, connectorId, connection, pinReadIds, selectedId) {
+        if (completionSortEnabled && selectedId == null) vm.preparePinnedCompletionSort(pinsToRead)
+        else vm.cancelPinnedCompletionSort()
+    }
     // Quota and load fold away while the list scrolls up, and come back on the way down.
     val fold = remember { FoldState() }
     val closeThread = {
@@ -1187,6 +1218,11 @@ private fun HomeScreen(vm: BridgeViewModel) {
     var pinPicker by remember { mutableStateOf(false) }
     var avatarThread by remember { mutableStateOf<ThreadSummary?>(null) }
     var chatStatsShown by rememberSaveable { mutableStateOf(false) }
+    var usageBackend by rememberSaveable { mutableStateOf<String?>(null) }
+    usageBackend?.let { backend -> AgentUsageDialog(vm, backend, connectorId, tokenDisplayUnit) { usageBackend = null } }
+    val openUsage: () -> Unit = {
+        if (homeBackend == "claude" && !claudeConsent.enabled) claudeNotice = true else usageBackend = homeBackend
+    }
     // Multi-select in the chat list: tick several sessions, then archive them together.
     var selecting by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(emptySet<String>()) }
@@ -1197,9 +1233,6 @@ private fun HomeScreen(vm: BridgeViewModel) {
     val homeContext = LocalContext.current
     // Every agent's sessions have a long-press menu now: archiving works for all.
     val threadMenu: (ThreadSummary) -> (() -> Unit)? = { thread -> { haptics.tick(); menuThread = thread } }
-    // Claude account switching is temporarily closed; the account button is the
-    // read-only Codex list only. The Claude entry returns with the feature.
-    val showAccountsButton = accountsAvailable && homeBackend == "codex"
     val listPane: @Composable () -> Unit = { Scaffold(containerColor = if (ChatLayout) SurfaceBase else Paper, bottomBar = {
         if ((ChatLayout || CodexLayout) && selecting) {
             val chosen = allThreads.filter { it.id in selectedIds }
@@ -1209,7 +1242,16 @@ private fun HomeScreen(vm: BridgeViewModel) {
                 vm.archiveThreads(chosen.filter { it.archived == bringBack }, !bringBack)
                 selecting = false; selectedIds = emptySet()
             }
-        } else if (ChatLayout) ChatBottomTabs(homeBackend, agentTabs, agentStates, tabThreads, liveStatuses, { homeBackend = it; vm.saveHomeBackend(it) }, settings = { agentSettingsReturnAccount = false; agentSettings = true }) { accountSheet = true }
+        } else if (ChatLayout) ChatBottomTabs(homeBackend, agentTabs, agentStates, tabThreads, liveStatuses, { homeBackend = it; vm.saveHomeBackend(it) }) { accountSheet = true }
+        else if (StudioLayout) {
+            Box(Modifier.fillMaxWidth().background(Paper).navigationBarsPadding().padding(horizontal = 18.dp, vertical = 10.dp)) {
+                Button(onClick = { create = true }, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(28.dp)) {
+                    Icon(Icons.Default.Add, null, Modifier.size(22.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("新建会话", fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
     }, topBar = {
         if (ChatLayout) {
             // A centered title with the waiting count, and "(未连接)" while the
@@ -1218,6 +1260,7 @@ private fun HomeScreen(vm: BridgeViewModel) {
             Column(Modifier.fillMaxWidth().background(Paper).statusBarsPadding()) {
                 FoldAway(fold, "chat-title") {
                 Column(Modifier.fillMaxWidth().animateContentSize(KhMotion.sizeSpring)) {
+                    var homeMenu by remember { mutableStateOf(false) }
                     // A clean title bar, as WeChat has: quota and the computer's load
                     // stay hidden until the title is tapped (tap again to hide).
                     Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 4.dp)
@@ -1230,14 +1273,36 @@ private fun HomeScreen(vm: BridgeViewModel) {
                             ConnectionState.Connecting -> "(连接中…)"
                             ConnectionState.Offline -> "(未连接)"
                         }
-                        // Same width as the buttons on the right, so the title stays centered.
-                        Spacer(Modifier.width(if (showAccountsButton) 96.dp else 48.dp))
+                        // Reuse the reserved space opposite the right-hand buttons.
+                        // The sort control no longer consumes a separate list row.
+                        Box(Modifier.width(96.dp), contentAlignment = Alignment.CenterStart) {
+                            if (pinsToRead.isNotEmpty()) {
+                                TextButton(
+                                    onClick = { haptics.tick(); completionSortEnabled = !completionSortEnabled },
+                                    modifier = Modifier.heightIn(min = 48.dp).semantics {
+                                        contentDescription = if (completionSortEnabled) "恢复置顶原顺序" else "置顶按完成时间排序"
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 4.dp),
+                                ) {
+                                    val color = if (completionSortEnabled) Accent else Muted
+                                    Icon(Icons.AutoMirrored.Filled.Sort, null, Modifier.size(20.dp), tint = color)
+                                    Spacer(Modifier.width(3.dp))
+                                    Text(if (completionSortEnabled) "恢复" else "排序", color = color, fontSize = 12.sp, maxLines = 1)
+                                }
+                            }
+                        }
                         Text(homeTabLabel(homeBackend, 3) + suffix, Modifier.weight(1f), textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis,
                             color = Ink, fontSize = 17.sp, fontWeight = FontWeight.Medium)
                         Row {
-                            if (showAccountsButton) AgentAccountsButton(agentAccounts[homeBackend]) { accountBackend = homeBackend }
                             // No refresh button, as WeChat has none: the list updates live.
                             IconButton({ create = true }) { Icon(Icons.Outlined.AddCircleOutline, "新任务", tint = Ink) }
+                            Box {
+                                IconButton({ homeMenu = true }) { Icon(Icons.Default.MoreHoriz, "列表更多", tint = Ink) }
+                                DropdownMenu(homeMenu, { homeMenu = false }) {
+                                    DropdownMenuItem({ Text("对话 Token 用量") }, { homeMenu = false; openUsage() },
+                                        leadingIcon = { Icon(Icons.Default.PieChart, null) })
+                                }
+                            }
                         }
                     }
                     // Folded with the quota and the load: shown when the title is tapped.
@@ -1246,6 +1311,7 @@ private fun HomeScreen(vm: BridgeViewModel) {
                     }
                 }
                 }
+                ComputerLockedBar(vm, connectorId)
             }
             return@Scaffold
         }
@@ -1267,7 +1333,7 @@ private fun HomeScreen(vm: BridgeViewModel) {
                     status = status,
                     connection = connection,
                     refreshing = refreshing,
-                    accounts = if (showAccountsButton) ({ AgentAccountsButton(agentAccounts[homeBackend]) { accountBackend = homeBackend } }) else null,
+                    usage = openUsage,
                     refresh = {
                         if (!refreshing) {
                             refreshing = true
@@ -1286,12 +1352,17 @@ private fun HomeScreen(vm: BridgeViewModel) {
                     avatar = { UserAvatar(account?.displayName ?: "KH", account?.avatarUrl, 30) },
                 ) { accountSheet = true }
             }
+            if (StudioLayout) FoldAway(fold, "studio-heading") {
+                Text("会话", Modifier.padding(start = 18.dp, top = 12.dp, bottom = 8.dp),
+                    style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold, color = Ink)
+            }
             if (multiPc) FoldAway(fold, "computers") { PcSwitcher(vm, computers, connectorId, homeBackend, agentTabs) }
             FoldAway(fold, "tabs") {
                 BackendTabs(homeBackend, agentTabs, agentStates, tabThreads, liveStatuses, settings = { agentSettingsReturnAccount = false; agentSettings = true }) { homeBackend = it; vm.saveHomeBackend(it) }
             }
             if (showPcLoad) FoldAway(fold, "load") { PcLoadBar(vm, connection) }
             UploadIssueBar(vm)
+            ComputerLockedBar(vm, connectorId)
             FoldAway(fold, "quota") {
                 if (notInstalled(homeBackend)) Unit
                 else if (homeBackend == "codex") WeeklyQuotaStrip(capabilities)
@@ -1343,14 +1414,35 @@ private fun HomeScreen(vm: BridgeViewModel) {
             recentHighlights.sortedWith(compareByDescending { thread -> isRunningThreadStatus(liveStatuses[thread.id] ?: thread.status) })
         } else recentHighlights
         val recentIds = recentHighlights.mapTo(HashSet()) { it.id }
-        val pinned = homePinnedThreads(scoped, recentIds, tab)
-        val recentChats = scoped.filterNot { it.pinned }
+        val defaultPinned = homePinnedThreads(scoped, recentIds, tab)
+        val pinned = if (completionSortEnabled) sortPinsByCompletion(defaultPinned, knownCompletions) else defaultPinned
+        val recentChats = scoped.filterNot { it.pinned || (StudioLayout && it.id in recentIds) }
+        val archivedHere = threads.filter { it.archived && backendTab(it.backend) == tab }.sortedByDescending(::threadActivityTime)
         val listState = remember(tab) { listStates.getOrPut(tab) { LazyListState() } }
+        if (tab == homeBackend && selectedId == null && !accountSheet && !devices && !create) {
+            val previewRows by rememberUpdatedState(remember(threads, tab, connectorId) {
+                threads.filter { backendTab(it.backend) == tab }.associate { it.id to it.historyPreviewKey(connectorId) }
+            })
+            LaunchedEffect(listState, connectorId, lifecycleOwner) {
+                lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                    snapshotFlow {
+                        if (listState.isScrollInProgress) emptyList()
+                        else visibleHistoryPreviews(listState.layoutInfo.visibleItemsInfo.map { it.key }, previewRows)
+                    }.collectLatest { keys ->
+                        if (keys.isNotEmpty()) {
+                            delay(120)
+                            vm.preloadHistoryPreviews(keys)
+                        }
+                    }
+                }
+            }
+        }
         if (ChatLayout || CodexLayout) {
             // One flat list, as a chat app has: what is going on now first
             // (running, waiting for you, just finished and unseen), then the
             // pinned chats (gray rows) and the rest, each by latest activity.
-            val ordered = wechatListOrder(scoped, recentHighlights)
+            val ordered = if (completionSortEnabled) wechatListOrderByCompletion(scoped, recentHighlights, knownCompletions)
+                else wechatListOrder(scoped, recentHighlights)
             // A chat moving to the top of a list shown from its top stays in
             // view: the list otherwise keeps its old first row in place and
             // the new one lands just above the screen. Read during this
@@ -1373,14 +1465,12 @@ private fun HomeScreen(vm: BridgeViewModel) {
             // every row's placement animation chased it, sliding the list down.
             Box(Modifier.padding(horizontal = 12.dp)) { BackgroundRunNote() }
             LazyColumn(Modifier.fillMaxSize(), state = listState, overscrollEffect = null) {
-                if (agentStates[tab] == HomeAgentState.Closed) item { Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { AgentClosedNote(tab) } }
+                if (agentStates[tab] == HomeAgentState.Closed) item { Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { AgentClosedNote(tab, selectedSystem?.hermesLocal == true) } }
                 if (scoped.isEmpty() && notInstalled(tab)) item { AgentNotInstalledState(tab) }
                 else if (scoped.isEmpty() && tab == "pi") item { PiEmptyState(connection, vm::startPiWeb) }
                 else if (scoped.isEmpty() && tab == "claude") item { ClaudeEmptyState(connection) { create = true } }
                 else if (scoped.isEmpty() && tab == "dsh") item { DshEmptyState(connection) }
                 else if (scoped.isEmpty()) item { EmptyState(connection) }
-                if (tab == "antigravity") item { Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { AntigravityNote() } }
-                val archivedHere = threads.filter { it.archived && backendTab(it.backend) == tab }.sortedByDescending(::threadActivityTime)
                 val toggleSelected: (ThreadSummary) -> Unit = { thread ->
                     haptics.tick(); selectedIds = if (thread.id in selectedIds) selectedIds - thread.id else selectedIds + thread.id
                 }
@@ -1396,19 +1486,18 @@ private fun HomeScreen(vm: BridgeViewModel) {
                         else ChatThreadRow(thread, liveStatuses[thread.id] ?: thread.status, if (selecting) null else threadMenu(thread), gray = thread.pinned && thread.id !in recentIds, open = open)
                     }
                 }
+                if (!ChatLayout && scoped.any { it.pinned }) item(key = "pinned-sort-header") {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.End) {
+                        PinnedSortButton(completionSortEnabled, describePins = true) { haptics.tick(); completionSortEnabled = !completionSortEnabled }
+                    }
+                }
+                if (!ChatLayout && completionSortEnabled && scoped.any { it.pinned && it.id !in knownCompletions }) item(key = "pinned-sort-hint") { PinnedSortHint() }
                 items(ordered, key = { it.id }) { thread ->
                     Box(Modifier.animateItem(fadeInSpec = tween(180), placementSpec = KhMotion.offsetSpring, fadeOutSpec = tween(120)).sharedThreadCard(thread.id)) { chatRow(thread) }
                 }
                 if (archivedHere.isNotEmpty()) {
                     item(key = "archived-header") {
-                        Row(Modifier.fillMaxWidth().clickable { haptics.tick(); showArchived = !showArchived }.padding(horizontal = 16.dp, vertical = 14.dp)
-                            .semantics { contentDescription = if (showArchived) "收起已归档的会话" else "显示已归档的会话" },
-                            verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Archive, null, Modifier.size(18.dp), tint = Muted)
-                            Spacer(Modifier.width(8.dp))
-                            Text("已归档（${archivedHere.size}）", Modifier.weight(1f), color = Muted, fontSize = 14.sp)
-                            Icon(if (showArchived) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.size(18.dp), tint = Muted)
-                        }
+                        ArchivedThreadsHeader(archivedHere.size, showArchived) { haptics.tick(); showArchived = !showArchived }
                     }
                     if (showArchived) items(archivedHere, key = { "archived-${it.id}" }) { thread ->
                         Box(Modifier.animateItem(fadeInSpec = tween(180), placementSpec = KhMotion.offsetSpring, fadeOutSpec = tween(120))) { chatRow(thread) }
@@ -1426,14 +1515,22 @@ private fun HomeScreen(vm: BridgeViewModel) {
         // Each section is one rounded group of slim rows (2026-11-01: denser
         // than a card per session, so about twice as many fit on a screen).
         LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 16.dp)) {
-            if (agentStates[tab] == HomeAgentState.Closed) item { AgentClosedNote(tab) }
+            if (agentStates[tab] == HomeAgentState.Closed) item { AgentClosedNote(tab, selectedSystem?.hermesLocal == true) }
             if (scoped.isEmpty() && notInstalled(tab)) item { AgentNotInstalledState(tab) }
             else if (scoped.isEmpty() && tab == "pi") item { PiEmptyState(connection, vm::startPiWeb) }
             else if (scoped.isEmpty() && tab == "claude") item { ClaudeEmptyState(connection) { create = true } }
             else if (scoped.isEmpty() && tab == "dsh") item { DshEmptyState(connection) }
             else if (scoped.isEmpty()) item { EmptyState(connection) }
-            if (tab == "antigravity") item { AntigravityNote() }
             val openThread: (ThreadSummary) -> Unit = { thread -> selectedId = thread.id; vm.saveLastViewedThreadId(thread.id); vm.open(thread.id) }
+            if (archivedHere.isNotEmpty()) {
+                item(key = "archived-header") {
+                    ArchivedThreadsHeader(archivedHere.size, showArchived) { haptics.tick(); showArchived = !showArchived }
+                }
+                if (showArchived) itemsIndexed(archivedHere, key = { _, thread -> "archived-${thread.id}" }) { index, thread ->
+                    ThreadRow(thread, liveStatuses[thread.id] ?: thread.status, groupPosition(index, archivedHere.size),
+                        onLongPress = threadMenu(thread)) { openThread(thread) }
+                }
+            }
             if (recentRows.isNotEmpty()) {
                 item { ThreadSection("最近", Icons.Default.Schedule, recentRows.size) }
                 itemsIndexed(recentRows, key = { _, thread -> "recent-${thread.id}" }) { index, thread ->
@@ -1443,7 +1540,12 @@ private fun HomeScreen(vm: BridgeViewModel) {
                 }
             }
             if (pinned.isNotEmpty()) {
-                item { ThreadSection("置顶", Icons.Default.PushPin, pinned.size) }
+                item {
+                    ThreadSection("置顶", Icons.Default.PushPin, pinned.size) {
+                        PinnedSortButton(completionSortEnabled) { haptics.tick(); completionSortEnabled = !completionSortEnabled }
+                    }
+                }
+                if (completionSortEnabled && pinned.any { it.id !in knownCompletions }) item { PinnedSortHint() }
                 itemsIndexed(pinned, key = { _, thread -> thread.id }) { index, thread ->
                     Box(Modifier.animateItem(fadeInSpec = tween(180), placementSpec = KhMotion.offsetSpring, fadeOutSpec = tween(120))) {
                         ThreadRow(thread, liveStatuses[thread.id] ?: thread.status, groupPosition(index, pinned.size), showPin = false, onLongPress = threadMenu(thread)) { openThread(thread) }
@@ -1519,7 +1621,7 @@ private fun HomeScreen(vm: BridgeViewModel) {
                         LocalToolImages provides remember(target.id) { ToolImageSource(target.id, vm) },
                         LocalSelfAvatar provides ((account?.displayName ?: "我") to account?.avatarUrl),
                         LocalChatPeer provides (target.id to target.title),
-                        LocalComputerFiles provides remember(target.id, target.cwd) { ComputerFileSource(target.cwd, vm) },
+                        LocalComputerFiles provides remember(target.id, target.cwd) { ComputerFileSource(target.id, target.cwd, vm) },
                     ) {
                         ThreadScreen(vm, target, closeThread)
                         ComputerFileDialog(vm)
@@ -1546,12 +1648,13 @@ private fun HomeScreen(vm: BridgeViewModel) {
         claudeWorkspaceTrust?.let { request -> ClaudeWorkspaceTrustDialog(request, claudeTrustWorking, vm::confirmClaudeWorkspaceTrust, vm::cancelClaudeWorkspaceTrust) }
         return
     }
-    if (create) NewTaskDialog(homeBackend, claudeModels, recentWorkdirs(threads), capabilities.codexSandboxBlocked, claudeConsent.enabled, { claudeNotice = true }, { create = false }) { cwd, prompt, mode, collaborationMode, backend, model, effort ->
+    if (create) key(connectorId) { NewTaskDialog(homeBackend, capabilities.models, vm::newTaskModels, claudeModels, recentWorkdirs(threads), capabilities.codexSandboxBlocked, claudeConsent.enabled, selectedSystem,
+        listOf("dsh", "claude", "hermes", "pi").filter(notInstalled).toSet(), { claudeNotice = true }, { create = false }) { cwd, prompt, mode, collaborationMode, backend, model, effort ->
         vm.newTask(cwd, prompt, mode, collaborationMode, backend, model, effort)
         // Show the tab the new task lands in.
         if (backend in visibleAgents && backend != homeBackend) { homeBackend = backend; vm.saveHomeBackend(backend) }
         create = false
-    }
+    } }
     var piProviders by remember { mutableStateOf(false) }
     var fetchedFiles by rememberSaveable { mutableStateOf(false) }
     val settingsClaudeUsage by vm.claudeUsage.collectAsState()
@@ -1900,7 +2003,7 @@ private fun HomeTitleBar(
     status: String,
     connection: ConnectionState,
     refreshing: Boolean,
-    accounts: (@Composable () -> Unit)?,
+    usage: () -> Unit,
     refresh: () -> Unit,
     create: () -> Unit,
     avatar: @Composable () -> Unit,
@@ -1909,8 +2012,10 @@ private fun HomeTitleBar(
     val spin = rememberInfiniteTransition(label = "home-refresh")
     val rotation by spin.animateFloat(0f, 360f, infiniteRepeatable(tween(800), RepeatMode.Restart), label = "home-refresh-rotation")
     Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Image(painterResource(R.drawable.khlink_logo), null, Modifier.size(24.dp), contentScale = ContentScale.Fit)
-        Spacer(Modifier.width(5.dp))
+        if (!StudioLayout) {
+            Image(painterResource(R.drawable.khlink_logo), null, Modifier.size(24.dp), contentScale = ContentScale.Fit)
+            Spacer(Modifier.width(5.dp))
+        }
         Column(Modifier.weight(1f)) {
             KhLinkWordmark(18.sp)
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1919,11 +2024,11 @@ private fun HomeTitleBar(
                 Text(status, style = MaterialTheme.typography.labelSmall, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        accounts?.invoke()
         IconButton(refresh, Modifier.size(40.dp), enabled = !refreshing) {
             Icon(Icons.Default.Refresh, "刷新", Modifier.size(20.dp).graphicsLayer { rotationZ = if (refreshing) rotation else 0f }, tint = Ink)
         }
-        IconButton(create, Modifier.size(40.dp)) { Icon(Icons.Default.Add, "新任务", Modifier.size(22.dp), tint = Ink) }
+        IconButton(usage, Modifier.size(40.dp)) { Icon(Icons.Default.PieChart, "对话 Token 用量", Modifier.size(20.dp), tint = Ink) }
+        if (!StudioLayout) IconButton(create, Modifier.size(40.dp)) { Icon(Icons.Default.Add, "新任务", Modifier.size(22.dp), tint = Ink) }
         // The Codex theme has the avatar at the bottom of its rail instead.
         if (!CodexLayout) IconButton(openAccount, Modifier.size(44.dp)) { avatar() }
     }
@@ -2011,49 +2116,46 @@ private fun FoldAway(state: FoldState, key: String, content: @Composable () -> U
     ) { content() }
 }
 
-private data class RailQuota(val short: String, val label: String, val remaining: Int?, val reset: String?, val color: Color, val remainingText: String? = null) {
+private data class RailQuota(val label: String, val remaining: Int?, val reset: String?, val color: Color, val remainingText: String? = null) {
     val displayRemaining: String get() = remainingText ?: "剩余 ${remaining?.let { "$it%" } ?: "—"}"
 }
 
-/** Conversation's left edge: remaining quota as slim vertical gauges (Claude 5 h + week, Codex week). Tap for details. */
+/** Conversation quota at the left edge. Every theme opens the same quota details. */
 @Composable
-private fun QuotaRail(vm: BridgeViewModel, tab: String, caps: CapabilityState, modifier: Modifier = Modifier) {
+private fun QuotaRail(vm: BridgeViewModel, tab: String, caps: CapabilityState, railWidth: Dp, modifier: Modifier = Modifier) {
     val connection by vm.connection.collectAsState()
     val observedUsage by vm.claudeUsage.collectAsState()
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     val usage = observedUsage?.displayAt(now)
     LaunchedEffect(Unit) { while (true) { delay(30_000); now = System.currentTimeMillis() } }
     LaunchedEffect(connection, tab) { if (tab == "claude" && connection == ConnectionState.Online && vm.claudeUsage.value == null) vm.claudeUsage() }
-    val weekColor = Color(0xFF3B82F6)
     val bars = when (tab) {
         "claude" -> listOf(
-            RailQuota("5h", "5小时", usage?.fiveHour?.remainingPercent, fiveHourResetLabel(usage?.fiveHour?.resetsAt, now, usage?.fiveHour?.remainingPercent, usage?.fiveHour?.resetEstimated == true), Color(0xFFD97757), usage?.fiveHour.remainingLabel(now)),
-            RailQuota("周", "本周", usage?.sevenDay?.remainingPercent, weeklyResetLabel(usage?.sevenDay?.resetsAt, now, usage?.sevenDay?.resetEstimated == true), weekColor, usage?.sevenDay.remainingLabel(now)),
+            RailQuota("5小时", usage?.fiveHour?.remainingPercent, fiveHourResetLabel(usage?.fiveHour?.resetsAt, now, usage?.fiveHour?.remainingPercent, usage?.fiveHour?.resetEstimated == true), Warm, usage?.fiveHour.remainingLabel(now)),
+            RailQuota("本周", usage?.sevenDay?.remainingPercent, weeklyResetLabel(usage?.sevenDay?.resetsAt, now, usage?.sevenDay?.resetEstimated == true), P.info, usage?.sevenDay.remainingLabel(now)),
         )
-        "codex" -> listOf(RailQuota("周", "本周", caps.weeklyRemainingPercent, capsResetLabel(caps)?.let { "重置 $it" }, weekColor))
+        "codex" -> listOf(RailQuota("本周", caps.weeklyRemainingPercent, capsResetLabel(caps)?.let { "重置 $it" }, P.info))
         else -> return
     }
-    // Hairline gauges hugging the screen edge (colour tells them apart); the
-    // numbers are one tap away so the conversation keeps its width.
+    val skin = LocalKhLinkSkin.current
     val density = androidx.compose.ui.platform.LocalDensity.current
     var details by remember { mutableStateOf(false) }
-    Box(modifier) {
-        Row(
-            Modifier.fillMaxHeight().padding(start = 3.dp, top = 8.dp, bottom = 8.dp)
-                .clickable(interactionSource = null, indication = null) { details = !details }
-                .semantics(mergeDescendants = true) { contentDescription = bars.joinToString("，") { "${it.label}额度 ${it.displayRemaining}" } },
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+    Box(modifier.width(railWidth).heightIn(min = 48.dp)
+        .clickable(interactionSource = null, indication = null, role = Role.Button, onClickLabel = "查看剩余额度") { details = !details }
+        .semantics { contentDescription = bars.joinToString("，") { "${it.label}额度 ${it.displayRemaining}" } },
+        contentAlignment = Alignment.Center,
+    ) {
+        val gauges: @Composable () -> Unit = {
             bars.forEach { bar ->
-                val low = bar.remaining != null && bar.remaining < 20
-                VerticalGauge(bar.remaining, if (low) Danger else bar.color, Modifier.width(3.dp).fillMaxHeight())
+                QuotaGauge(bar.remaining, if (bar.remaining != null && bar.remaining < 20) Danger else bar.color, skin)
             }
         }
+        if (skin.studioLayout) Column(verticalArrangement = Arrangement.spacedBy(5.dp)) { gauges() }
+        else Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) { gauges() }
         if (details) {
             Popup(
                 alignment = Alignment.CenterStart,
-                offset = androidx.compose.ui.unit.IntOffset(with(density) { 16.dp.roundToPx() }, 0),
+                offset = androidx.compose.ui.unit.IntOffset(with(density) { (railWidth + 4.dp).roundToPx() }, 0),
                 onDismissRequest = { details = false },
                 properties = PopupProperties(focusable = true),
             ) {
@@ -2075,22 +2177,57 @@ private fun QuotaRail(vm: BridgeViewModel, tab: String, caps: CapabilityState, m
     }
 }
 
-/** A slim vertical bar filling from the bottom with the remaining share. */
 @Composable
-private fun VerticalGauge(remaining: Int?, color: Color, modifier: Modifier) {
+private fun QuotaGauge(remaining: Int?, color: Color, skin: KhLinkSkin) {
     val level by animateFloatAsState((remaining ?: 0).coerceIn(0, 100) / 100f, tween(700), label = "quota-gauge")
-    val track = Divider.copy(alpha = 0.7f)
-    androidx.compose.foundation.Canvas(modifier) {
-        val radius = androidx.compose.ui.geometry.CornerRadius(size.width / 2, size.width / 2)
-        drawRoundRect(track, cornerRadius = radius)
-        if (remaining != null && level > 0f) {
-            val h = (size.height * level).coerceAtLeast(size.width)
-            drawRoundRect(
-                androidx.compose.ui.graphics.Brush.verticalGradient(listOf(color.copy(alpha = 0.55f), color), startY = size.height - h, endY = size.height),
-                topLeft = Offset(0f, size.height - h),
-                size = androidx.compose.ui.geometry.Size(size.width, h),
-                cornerRadius = radius,
-            )
+    val track = Divider
+    val gaugeSize = when {
+        skin.studioLayout -> Modifier.size(11.dp)
+        skin.chatLayout -> Modifier.size(4.dp, 55.dp)
+        skin.codexLayout -> Modifier.size(4.dp, 64.dp)
+        skin.flatLayout -> Modifier.size(5.dp, 45.dp)
+        else -> Modifier.size(4.dp, 70.dp)
+    }
+    androidx.compose.foundation.Canvas(gaugeSize) {
+        val fill = if (remaining == null) 0f else level
+        when {
+            skin.studioLayout -> {
+                val stroke = Stroke(1.45.dp.toPx(), cap = StrokeCap.Round)
+                val inset = stroke.width / 2
+                drawCircle(track, radius = size.minDimension / 2 - inset, style = stroke)
+                if (fill > 0f) drawArc(color, -90f, 360f * fill, useCenter = false,
+                    topLeft = Offset(inset, inset), size = Size(size.width - stroke.width, size.height - stroke.width), style = stroke)
+            }
+            skin.chatLayout || skin.codexLayout -> {
+                val steps = if (skin.chatLayout) 8 else 10
+                val spacing = size.height / steps
+                repeat(steps) { index ->
+                    val part = (fill * steps - index).coerceIn(0f, 1f)
+                    val ink = androidx.compose.ui.graphics.lerp(track, color, part)
+                    val y = size.height - spacing * (index + 0.5f)
+                    if (skin.chatLayout) drawCircle(ink, size.width / 2, Offset(center.x, y))
+                    else drawRect(ink, Offset(0f, y - size.width / 2), Size(size.width, size.width))
+                }
+            }
+            skin.flatLayout -> {
+                val top = Offset(center.x, size.width / 2)
+                val bottom = Offset(center.x, size.height - size.width / 2)
+                val marker = Offset(center.x, bottom.y - (bottom.y - top.y) * fill)
+                val line = 1.dp.toPx()
+                drawLine(track, top, bottom, line)
+                if (remaining != null) {
+                    drawLine(color, marker, bottom, line)
+                    drawCircle(color, size.width / 2, marker)
+                }
+            }
+            else -> {
+                val radius = CornerRadius(size.width / 2)
+                drawRoundRect(track, cornerRadius = radius)
+                if (fill > 0f) {
+                    val height = (size.height * fill).coerceAtLeast(size.width)
+                    drawRoundRect(color, topLeft = Offset(0f, size.height - height), size = Size(size.width, height), cornerRadius = radius)
+                }
+            }
         }
     }
 }
@@ -2120,6 +2257,23 @@ private fun UploadIssueBar(vm: BridgeViewModel) {
                 Icon(Icons.Default.CloudOff, null, Modifier.size(18.dp), tint = WaitingInk)
                 Spacer(Modifier.width(8.dp))
                 Text(uploadIssueText(shown), color = WaitingInk, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComputerLockedBar(vm: BridgeViewModel, connectorId: String? = null) {
+    val screens by vm.computerScreens.collectAsState()
+    val selected by vm.selectedConnectorId.collectAsState()
+    val connection by vm.connection.collectAsState()
+    val locked = connection == ConnectionState.Online && selectedComputerScreen(connectorId?.takeIf { it.isNotBlank() } ?: selected, screens)?.locked == true
+    AnimatedVisibility(locked, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+        Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = P.waitingContainer, shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, P.waitingBorder)) {
+            Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.NotificationsActive, null, Modifier.size(18.dp), tint = WaitingInk)
+                Spacer(Modifier.width(8.dp))
+                Text("电脑已锁屏 · 部分桌面操作需要解锁", color = WaitingInk, style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -2368,7 +2522,7 @@ private fun QuotaBar(remaining: Int?, loading: Boolean, modifier: Modifier = Mod
 private fun capsResetLabel(caps: CapabilityState): String? = caps.weeklyResetAt?.let { formatTime(it) }
 
 @Composable
-private fun ThreadSection(label: String, image: ImageVector, count: Int) {
+private fun ThreadSection(label: String, image: ImageVector, count: Int, trailing: @Composable (() -> Unit)? = null) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -2380,26 +2534,69 @@ private fun ThreadSection(label: String, image: ImageVector, count: Int) {
         Text(label, fontSize = 12.sp, color = Muted, fontWeight = FontWeight.SemiBold, letterSpacing = 0.5.sp)
         Spacer(Modifier.width(5.dp))
         Text("$count", fontSize = 11.sp, color = Muted.copy(alpha = 0.7f))
+        if (trailing != null) { Spacer(Modifier.weight(1f)); trailing() }
     }
 }
 
 @Composable
-private fun NewTaskDialog(initialBackend: String, claudeModels: List<ClaudeModel>, recentDirs: List<String>, codexSandboxBlocked: Boolean, claudeEnabled: Boolean, claudeNotice: () -> Unit, close: () -> Unit, create: (String, String, String, String, String, String, String) -> Unit) {
+private fun PinnedSortButton(active: Boolean, describePins: Boolean = false, onClick: () -> Unit) {
+    TextButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 8.dp)) {
+        val label = when {
+            active && describePins -> "恢复置顶原顺序"
+            active -> "恢复原顺序"
+            describePins -> "置顶按完成时间"
+            else -> "按完成时间"
+        }
+        Text(label, fontSize = 12.sp, color = if (active) Accent else Muted)
+    }
+}
+
+@Composable
+private fun PinnedSortHint() {
+    Text("没有完成时间的对话暂排在后面", Modifier.padding(start = 12.dp, bottom = 6.dp), fontSize = 11.sp, color = Muted)
+}
+
+@Composable
+private fun NewTaskDialog(initialBackend: String, codexModels: List<String>, loadModels: suspend (String) -> List<Pair<String, String>>, claudeModels: List<ClaudeModel>, allRecentDirs: List<String>, codexSandboxBlocked: Boolean, claudeEnabled: Boolean, system: ComputerSystem?, hiddenAgents: Set<String>, claudeNotice: () -> Unit, close: () -> Unit, create: (String, String, String, String, String, String, String) -> Unit) {
     // The permission mode chosen last time, per agent, is where the next task starts.
     val modePrefs = LocalContext.current.getSharedPreferences("new-task", android.content.Context.MODE_PRIVATE)
     // On a computer where Codex's sandbox cannot start PowerShell, every mode
     // but full access hangs, so a new Codex task starts in full access.
     fun lastMode(agent: String) = if (agent == "codex" && codexSandboxBlocked) "yolo"
         else modePrefs.getString("mode.$agent", null) ?: if (agent == "claude") "default" else "manual"
-    var cwd by remember { mutableStateOf(recentDirs.firstOrNull() ?: "C:\\") }; var prompt by remember { mutableStateOf("") }; var collaborationMode by remember { mutableStateOf("default") }
-    var backend by remember { mutableStateOf(if (initialBackend == "claude" && !claudeEnabled) "codex" else backendTab(initialBackend)) }
-    var mode by remember { mutableStateOf(lastMode(backendTab(initialBackend))) }
-    var claudeModel by remember { mutableStateOf("") }; var claudeEffort by remember { mutableStateOf("") }
+    // A Mac (or Linux) computer: /Users/... folders for every agent, and its
+    // Windows-only agents (DSH, Pi) are not offered.
+    val unixComputer = system?.unix == true
+    val recentDirs = if (unixComputer) allRecentDirs.filter { it.startsWith("/") } else allRecentDirs
+    val unixHome = if (unixComputer) system?.home else null
+    // Hermes in WSL works in Linux folders; Hermes's Windows install in Windows ones.
+    val hermesLocal = system?.hermesLocal == true
+    fun unixPaths(agent: String) = unixComputer || (agent == "hermes" && !hermesLocal)
+    val agents = listOf("codex" to "Codex", "dsh" to "DSH", "claude" to "Claude", "hermes" to "Hermes", "pi" to "Pi")
+        .filter { it.first !in hiddenAgents }
+    val initialTab = backendTab(initialBackend)
+    val firstBackend = agents.firstOrNull { (id, _) -> id == initialTab && (id != "claude" || claudeEnabled) }?.first ?: "codex"
+    var cwd by remember { mutableStateOf(defaultNewTaskDir(recentDirs, unixPaths(firstBackend), unixHome)) }; var prompt by remember { mutableStateOf("") }; var collaborationMode by remember { mutableStateOf("default") }
+    var backend by remember { mutableStateOf(firstBackend) }
+    var mode by remember { mutableStateOf(lastMode(firstBackend)) }
+    var model by remember(backend) { mutableStateOf("") }
+    var claudeEffort by remember(backend) { mutableStateOf("") }
+    var models by remember(backend) { mutableStateOf<List<Pair<String, String>>?>(null) }
+    var catalogError by remember(backend) { mutableStateOf(false) }
+    var customModel by remember(backend) { mutableStateOf(false) }
+    var retry by remember(backend) { mutableIntStateOf(0) }
+    LaunchedEffect(backend, retry) {
+        if (backend in setOf("pi", "dsh", "hermes")) {
+            catalogError = false
+            try { models = loadModels(backend) }
+            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { catalogError = true }
+        }
+    }
     val agentLabel = when (backend) { "claude" -> "Claude Code"; "pi" -> "Pi"; "dsh" -> "DeepSeek"; "hermes" -> "Hermes"; else -> "Codex" }
-    // Hermes works in Linux folders, the others in Windows ones.
     LaunchedEffect(backend) {
-        val linux = backend == "hermes"
-        if (linux != cwd.startsWith("/")) cwd = recentDirs.firstOrNull { it.startsWith("/") == linux } ?: if (linux) "" else "C:\\"
+        val linux = unixPaths(backend)
+        if (linux != cwd.startsWith("/")) cwd = defaultNewTaskDir(recentDirs, linux, unixHome)
     }
     AlertDialog(
         onDismissRequest = close,
@@ -2407,21 +2604,26 @@ private fun NewTaskDialog(initialBackend: String, claudeModels: List<ClaudeModel
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("智能体", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = Ink)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("codex" to "Codex", "dsh" to "DSH", "claude" to "Claude", "hermes" to "Hermes", "pi" to "Pi").forEach { (id, label) ->
-                        val isSelected = backend == id
-                        OutlinedButton(
-                            onClick = { if (id == "claude" && !claudeEnabled) claudeNotice() else { backend = id; mode = lastMode(id); if (id == "claude") collaborationMode = "default" } },
-                            modifier = Modifier.weight(1f).heightIn(min = 72.dp),
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, if (isSelected) Accent else Divider),
-                            colors = ButtonDefaults.outlinedButtonColors(containerColor = if (isSelected) P.selected else Color.Transparent),
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                AgentLogo(id, 24.dp)
-                                Text(label, color = if (isSelected) Accent else Ink, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    agents.chunked(3).forEach { row ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            row.forEach { (id, label) ->
+                                val isSelected = backend == id
+                                OutlinedButton(
+                                    onClick = { if (id == "claude" && !claudeEnabled) claudeNotice() else { backend = id; mode = lastMode(id); if (id == "claude") collaborationMode = "default" } },
+                                    modifier = Modifier.weight(1f).heightIn(min = 72.dp),
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(1.dp, if (isSelected) Accent else Divider),
+                                    colors = ButtonDefaults.outlinedButtonColors(containerColor = if (isSelected) P.selected else Color.Transparent),
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        AgentLogo(id, 24.dp)
+                                        Text(label, color = if (isSelected) Accent else Ink, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                                    }
+                                }
                             }
+                            if (agents.size > 3) repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                         }
                     }
                 }
@@ -2458,15 +2660,28 @@ private fun NewTaskDialog(initialBackend: String, claudeModels: List<ClaudeModel
                 )
                 if (backend == "claude") {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Box(Modifier.weight(1f)) { Choice("模型", claudeModelLabel(claudeModel, claudeModels), claudeModelOptions(claudeModels)) { claudeModel = it; if (claudeEffort.isNotBlank() && claudeEffort !in claudeEffortsFor(it, claudeModels)) claudeEffort = "" } }
-                        Box(Modifier.weight(1f)) { Choice("强度", claudeEffortLabel(claudeEffort), claudeEffortOptions(claudeModel, claudeModels)) { claudeEffort = it } }
+                        Box(Modifier.weight(1f)) { Choice("模型", claudeModelLabel(model, claudeModels), claudeModelOptions(claudeModels)) { model = it; if (claudeEffort.isNotBlank() && claudeEffort !in claudeEffortsFor(it, claudeModels)) claudeEffort = "" } }
+                        Box(Modifier.weight(1f)) { Choice("强度", claudeEffortLabel(claudeEffort), claudeEffortOptions(model, claudeModels)) { claudeEffort = it } }
                     }
+                    if (claudeModels.any { it.source == "desktop-session" }) Text("“桌面会话”表示最近在电脑用过，实际可用性以 Claude 桌面端为准。", color = Muted, style = MaterialTheme.typography.bodySmall)
+                } else {
+                    val options = if (backend == "codex") codexModels.map { it to it } else models.orEmpty()
+                    val canChoose = backend == "codex" || models != null
+                    if (canChoose) {
+                        val custom = "__custom__"
+                        val choices = listOf(SettingOption("", "使用电脑默认模型")) + options.distinctBy { it.first }.filter { it.first.isNotBlank() && it.first != custom }.map { SettingOption(it.first, it.second) } + SettingOption(custom, "输入模型 ID…")
+                        NewTaskModelChoice(if (customModel) "输入模型 ID…" else choices.firstOrNull { it.id == model }?.label ?: model, choices) {
+                            customModel = it == custom
+                            model = if (customModel) "" else it
+                        }
+                        if (customModel) OutlinedTextField(model, { model = it.trim() }, Modifier.fillMaxWidth(),
+                            label = { Text(if (backend == "dsh" || backend == "pi") "供应商/模型 ID" else "模型 ID") }, singleLine = true)
+                    } else if (catalogError) {
+                        TextButton({ retry++ }) { Text("使用电脑默认模型 · 重新读取模型") }
+                    } else Text("正在读取模型 · 可使用电脑默认模型开始", color = Muted, style = MaterialTheme.typography.bodySmall)
                 }
-                // Pi's model, thinking level and tools are set in PI WEB / its settings.
-                if (backend == "pi") Text("Pi 会话在电脑上的 PI WEB 里运行；模型和思考强度建好后在会话顶部设置。", color = Muted, style = MaterialTheme.typography.bodySmall)
-                else if (backend == "dsh") Text("DeepSeek Harness 会话在电脑上的 DSH 桌面端里运行；新会话使用桌面端当前的模型和权限，创建后可在会话设置里修改。", color = Muted, style = MaterialTheme.typography.bodySmall)
-                else if (backend == "hermes") Text("Hermes 在这台电脑的 Linux（WSL）里运行，工作目录填 Linux 路径，留空用家目录。可以直接发 /goal、/loop、/kanban 等命令；模型和专家会诊建好后在会话顶部切换。", color = Muted, style = MaterialTheme.typography.bodySmall)
-                else PermissionModePicker(if (backend == "claude") "claude" else "codex", mode) { mode = it; modePrefs.edit().putString("mode.$backend", it).apply() }
+                if (backend == "hermes" && !hermesLocal) Text("Hermes 使用 Linux 工作目录。", color = Muted, style = MaterialTheme.typography.bodySmall)
+                if (backend == "codex" || backend == "claude") PermissionModePicker(backend, mode) { mode = it; modePrefs.edit().putString("mode.$backend", it).apply() }
                 if (backend == "codex" && codexSandboxBlocked && mode != "yolo") Text(
                     "这台电脑的 PowerShell 是微软商店版，Codex 在沙箱里启动不了它：选这个模式时命令会一直卡住。请选「完全访问权限」，或在电脑上安装 PowerShell 的安装包版（msi）。",
                     color = Danger, style = MaterialTheme.typography.bodySmall,
@@ -2494,8 +2709,9 @@ private fun NewTaskDialog(initialBackend: String, claudeModels: List<ClaudeModel
         dismissButton = { TextButton(close) { Text("取消", color = Muted) } },
         confirmButton = {
             Button(
-                onClick = { create(cwd, prompt, mode, collaborationMode, backend, if (backend == "claude") claudeModel else "", if (backend == "claude") claudeEffort else "") },
-                enabled = cwd.isNotBlank() && prompt.isNotBlank(),
+                onClick = { create(cwd, prompt, mode, collaborationMode, backend, model, if (backend == "claude") claudeEffort else "") },
+                enabled = cwd.isNotBlank() && prompt.isNotBlank() && (!customModel || model.isNotBlank() &&
+                    (backend !in setOf("pi", "dsh") || (model.substringBefore('/').isNotBlank() && model.substringAfter('/', "").isNotBlank()))),
                 shape = RoundedCornerShape(10.dp),
             ) { Text("开始") }
         },
@@ -2534,6 +2750,18 @@ private fun EmptyState(connection: ConnectionState) {
 }
 
 @Composable
+private fun ArchivedThreadsHeader(count: Int, expanded: Boolean, toggle: () -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = toggle)
+        .semantics { contentDescription = if (expanded) "收起已归档的会话" else "显示已归档的会话" }
+        .padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Default.Archive, null, Modifier.size(18.dp), tint = Muted)
+        Spacer(Modifier.width(8.dp))
+        Text("已归档（$count）", Modifier.weight(1f), color = Muted, fontSize = 14.sp)
+        Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.size(18.dp), tint = Muted)
+    }
+}
+
+@Composable
 private fun ThreadRow(thread: ThreadSummary, status: String, position: GroupPos = GroupPos.Single, shared: Boolean = true, showPin: Boolean = true, onLongPress: (() -> Unit)? = null, open: () -> Unit) {
     val running = isRunningStatus(status)
     val waiting = isWaitingThreadStatus(status)
@@ -2554,10 +2782,11 @@ private fun ThreadRow(thread: ThreadSummary, status: String, position: GroupPos 
     Box(
         Modifier
             .fillMaxWidth()
+            .then(if (StudioLayout) Modifier.padding(vertical = 4.dp) else Modifier)
             .then(if (shared) Modifier.sharedThreadCard(thread.id) else Modifier)
-            .clip(if (FlatLayout) RoundedCornerShape(0.dp) else groupShape(position))
+            .clip(if (StudioLayout) RoundedCornerShape(16.dp) else if (FlatLayout) RoundedCornerShape(0.dp) else groupShape(position))
             .background(animatedContainerColor)
-            .then(if (FlatLayout) Modifier else Modifier.groupOutline(position, Divider))
+            .then(if (StudioLayout) Modifier.border(1.dp, Divider, RoundedCornerShape(16.dp)) else if (FlatLayout) Modifier else Modifier.groupOutline(position, Divider))
             .combinedClickable(interactionSource = rowInteraction, indication = LocalIndication.current, onLongClick = onLongPress, onClick = open),
     ) {
         Column(
@@ -2565,7 +2794,7 @@ private fun ThreadRow(thread: ThreadSummary, status: String, position: GroupPos 
                 .fillMaxWidth()
                 .background(flash)
                 .animateContentSize(KhMotion.sizeSpring)
-                .padding(start = 14.dp, end = 12.dp, top = if (FlatLayout) 8.dp else 9.dp, bottom = if (FlatLayout) 8.dp else 9.dp)
+                .padding(start = if (StudioLayout) 66.dp else 14.dp, end = 12.dp, top = if (StudioLayout) 16.dp else if (FlatLayout) 8.dp else 9.dp, bottom = if (StudioLayout) 16.dp else if (FlatLayout) 8.dp else 9.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.weight(1f)) {
@@ -2632,9 +2861,14 @@ private fun ThreadRow(thread: ThreadSummary, status: String, position: GroupPos 
                 }
             }
         }
+        if (StudioLayout) {
+            Box(Modifier.align(Alignment.CenterStart).padding(start = 12.dp).size(42.dp).background(P.surfaceAlt, RoundedCornerShape(11.dp)), contentAlignment = Alignment.Center) {
+                Icon(Icons.Outlined.Folder, null, Modifier.size(22.dp), tint = Ink)
+            }
+        }
         Box(Modifier.matchParentSize()) {
             Box(Modifier.align(Alignment.CenterStart).padding(start = 1.5.dp).width(3.dp).fillMaxHeight(0.56f).background(edge, RoundedCornerShape(50)))
-            if (CodexLayout || position == GroupPos.First || position == GroupPos.Middle) {
+            if (!StudioLayout && (CodexLayout || position == GroupPos.First || position == GroupPos.Middle)) {
                 Box(Modifier.align(Alignment.BottomStart).padding(start = 14.dp).fillMaxWidth().height(0.5.dp).background(Divider))
             }
         }
@@ -2655,6 +2889,7 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
     val settingsState by vm.threadSettings.collectAsState(); val currentSettings = settingsState[thread.id] ?: ThreadSettings()
     val dshCatalog by vm.dshCatalog.collectAsState()
     val hermesCatalog by vm.hermesCatalog.collectAsState()
+    val antigravityCatalog by vm.antigravityCatalog.collectAsState()
     val dshPending by vm.dshPending.collectAsState()
     val dshPendingLoading by vm.dshPendingLoading.collectAsState()
     var dshAnswerOpen by remember { mutableStateOf(false) }
@@ -2677,7 +2912,12 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
         if (thread.waiting == null && !isWaitingThreadStatus(taskStatus)) vm.forgetAnswered(thread.id)
     }
     val executionStatuses by vm.executionStatuses.collectAsState(); val executionStatus = executionStatuses[thread.id] ?: thread.status
+    val stoppingThreads by vm.stoppingThreads.collectAsState()
+    val stopConfirmedThreads by vm.stopConfirmedThreads.collectAsState()
+    val stopping = thread.id in stoppingThreads
     val codexQuestionStates by vm.codexQuestionStates.collectAsState()
+    val allCodexAnswerDrafts by vm.codexAnswerDrafts.collectAsState()
+    val codexAnswerDrafts = allCodexAnswerDrafts[thread.id].orEmpty()
     val pendingCodexQuestion = codexQuestionStates[thread.id]?.takeIf { it.pending }
     val turnDurations by vm.turnDurations.collectAsState(); val turnDuration = turnDurations[thread.id]
     val queuedInstructions by vm.queuedInstructions.collectAsState(); val allOutgoing = queuedInstructions[thread.id].orEmpty()
@@ -2689,7 +2929,7 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
         while (allOutgoing.any { isSettlingInQueue(it, System.currentTimeMillis()) }) { delay(300); queueClock = System.currentTimeMillis() }
         queueClock = System.currentTimeMillis()
     }
-    val queued = allOutgoing.filter { showInstructionInQueue(it, queueClock) }
+    val queued = allOutgoing.filter { showInstructionInQueue(it, queueClock, thread.backend, taskStatus) }
     val steerableQueued = queued.filter { canSteerQueuedInstruction(thread.backend, it.state, it.origin, isTurnBusyStatus(taskStatus)) }
     val modes by vm.threadModes.collectAsState(); val activeMode = modes[thread.id] ?: currentSettings.permissionMode
     val switchingIds by vm.switchingSettings.collectAsState(); val switching = thread.id in switchingIds
@@ -2707,13 +2947,16 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
     var automaticScroll by remember(thread.id) { mutableStateOf(false) }
     val lightDetails by vm.lightDetails.collectAsState()
     val lightFetching by vm.lightFetching.collectAsState()
+    val lightProgress by vm.lightProgress.collectAsState()
     LaunchedEffect(thread.id) { vm.loadLightDetails(thread.id) }
     DisposableEffect(vm, thread.id) { onDispose { vm.cancelLightDetails(thread.id) } }
-    val outgoingInline = remember(allOutgoing, queueClock) { allOutgoing.filterNot { showInstructionInQueue(it, queueClock) }.map { it.id }.toSet() }
+    val outgoingInline = remember(allOutgoing, queueClock, thread.backend, taskStatus) {
+        allOutgoing.filterNot { showInstructionInQueue(it, queueClock, thread.backend, taskStatus) }.map { it.id }.toSet()
+    }
     val displayMessages = remember(messages, allOutgoing, lightDetails, outgoingInline) {
         // An answer to a Codex question shows as the choice, not the reply block Codex reads.
         // Light mode: a tool step fetched from the computer replaces its placeholder.
-        val visible = mergeTransientUserInstructions(messages, allOutgoing, queueClock).map { item ->
+        val visible = mergeTransientUserInstructions(messages, allOutgoing, queueClock, thread.backend, taskStatus).map { item ->
             if (item.type.contains("user", true)) {
                 val text = displayUploadReferences(questionReplyDisplay(item.text) ?: item.text)
                 if (text != item.text) item.copy(text = text) else item
@@ -2727,8 +2970,25 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
         if (thread.backend == "claude") activeClaudeNextSteps(displayMessages).map { it.id }.toSet() else emptySet()
     }
     val historyBlocks = remember(displayMessages, thread.backend) { groupHistoryItems(displayMessages, inlineReasoning = thread.backend == "claude") }
+    LaunchedEffect(thread.id, historyBlocks.isNotEmpty()) {
+        if (historyBlocks.isNotEmpty()) androidx.compose.runtime.withFrameNanos {
+            android.util.Log.d("FengzhuBridge", "history content frame thread=${thread.id}")
+        }
+    }
+    // Only confirmed history defines turn boundaries; a locally queued draft
+    // must not make images from the running turn appear prematurely.
+    val previousTurnIds = remember(messages) { historyIdsBeforeLatestUserMessage(messages) }
     val chatMarks = remember(displayMessages) { chatTimeMarks(displayMessages, ::historyItemTimestamp) }
-    val turnFooters = remember(displayMessages, usageState[thread.id]) { completedTurnFooters(displayMessages, usageState[thread.id]) }
+    val latestUserAt = remember(messages) { messages.asSequence().filter { it.type == "userMessage" }.mapNotNull(::historyItemTimestamp).maxOrNull() }
+    val outputSpeed = liveOutputSpeed(usageState[thread.id], connection == ConnectionState.Online, isTurnBusyStatus(taskStatus), latestUserAt)
+    val streamingReply = if (connection == ConnectionState.Online && isTurnBusyStatus(taskStatus))
+        messages.lastOrNull { it.type == "agentMessage" || it.type == "userMessage" }?.takeIf { it.type == "agentMessage" } else null
+    val liveMeter = remember(thread.id, latestUserAt, streamingReply?.id) { LiveTextSpeed() }
+    var liveTextRate by remember(liveMeter) { mutableStateOf<String?>(null) }
+    LaunchedEffect(liveMeter, streamingReply?.text) {
+        liveTextRate = streamingReply?.let { liveMeter.observe(it.text, android.os.SystemClock.elapsedRealtime()) }
+        if (liveTextRate != null) { delay(5_000); liveTextRate = null }
+    }
     val usageHistoryFrom = remember(displayMessages) { displayMessages.mapNotNull(::historyItemTimestamp).minOrNull() ?: 0L }
     LaunchedEffect(thread.id, connection, taskStatus, usageHistoryFrom, showTokenUsage) {
         if (thread.backend == "antigravity" && !showTokenUsage) return@LaunchedEffect
@@ -2875,6 +3135,9 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
         if (connection == ConnectionState.Online && backendHasThreadSettings(thread.backend)) vm.loadSettings(thread.id)
     }
     val mobileRunning = isMobileRunningStatus(executionStatus); val turnBusy = isTurnBusyStatus(executionStatus)
+    val messageFooters = remember(displayMessages, usageState[thread.id], turnBusy) {
+        messageUsageFooters(displayMessages, usageState[thread.id], turnBusy, thread.backend)
+    }
     val agentAccountStates by vm.agentAccounts.collectAsState()
     val accountSwitching = thread.backend == "claude" && agentAccountStates["claude"]?.switching == true
     val taskExecuting = isRunningStatus(executionStatus) || mobileRunning
@@ -2889,6 +3152,11 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
             sendNow -> vm.steer(thread.id, thread.title, text, uploadedAttachments)
             else -> vm.queue(thread.id, thread.title, text, uploadedAttachments)
         }
+    }
+    val openThreadSettings: () -> Unit = {
+        settings = true
+        if (thread.backend == "codex") vm.capabilities()
+        if (backendHasThreadSettings(thread.backend)) vm.loadSettings(thread.id, refresh = thread.backend == "antigravity")
     }
     Scaffold(Modifier.sharedThreadCard(thread.id), containerColor = Paper, topBar = {
         Column(Modifier.fillMaxWidth().background(if (ChatLayout) Paper else SurfaceBase).statusBarsPadding()) {
@@ -2907,7 +3175,7 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
                     Spacer(Modifier.width(10.dp))
                     Icon(Icons.Outlined.Folder, null, Modifier.size(19.dp), tint = Ink)
                     Spacer(Modifier.width(10.dp))
-                } else if (!ChatLayout) { AgentLogo(thread.backend, 24.dp); Spacer(Modifier.width(8.dp)) }
+                } else if (!ChatLayout && !StudioLayout) { AgentLogo(thread.backend, 24.dp); Spacer(Modifier.width(8.dp)) }
                 Box(
                     Modifier.weight(1f).then(
                         if (ChatLayout || CodexLayout) Modifier.clickable(interactionSource = null, indication = null) { haptics.tick(); headerDetails = !headerDetails }
@@ -2929,10 +3197,6 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
                         if (ChatLayout || CodexLayout) { Spacer(Modifier.width(6.dp)); HeaderLight(connection, taskStatus) }
                     }
                 }
-                if (activeMode == "yolo" || activeMode == "bypassPermissions") {
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (thread.backend == "claude") "Bypass" else "完全访问", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = Danger)
-                }
                 val collaborationLabel = when (currentSettings.modeSyncState) {
                     "pending" -> if (currentSettings.desiredCollaborationMode == "plan") "计划待同步" else "执行待同步"
                     "failed" -> "模式同步失败"
@@ -2951,6 +3215,12 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
                     IconButton({ more = true }, Modifier.size(48.dp)) { Icon(if (ChatLayout || CodexLayout) Icons.Default.MoreHoriz else Icons.Default.MoreVert, "更多", tint = Ink) }
                     DropdownMenu(more, { more = false }) {
                     DropdownMenuItem({ Text("Token 用量") }, { showTokenUsage = true; more = false }, leadingIcon = { Icon(Icons.Default.BarChart, null) })
+                    if (thread.backend == "codex" || thread.backend == "claude") {
+                        val mode = if (thread.backend == "claude") claudePermissionValue(activeMode) else activeMode.ifBlank { "manual" }
+                        val label = permissionModeOptions(thread.backend).firstOrNull { it.id == mode }?.label
+                        DropdownMenuItem({ Text(label?.let { "权限 · $it" } ?: "权限模式") },
+                            { more = false; openThreadSettings() }, leadingIcon = { Icon(Icons.Default.Security, null) })
+                    }
                     if (thread.backend == "antigravity") {
                         DropdownMenuItem({ Text("重新同步对话") }, { vm.open(thread.id); more = false }, leadingIcon = { Icon(Icons.Default.Refresh, null) })
                     }
@@ -2980,7 +3250,7 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
                 when {
                     isWaitingStatus(taskStatus) && !isWaitingStatus(before) -> haptics.attention()
                     isRunningStatus(before) && (taskStatus.contains("fail", true) || taskStatus.contains("error", true)) -> haptics.reject()
-                    isRunningStatus(before) && isCompletedThreadStatus(taskStatus) -> haptics.confirm()
+                    isRunningStatus(before) && isCompletedThreadStatus(taskStatus) && thread.id !in stopConfirmedThreads -> haptics.confirm()
                 }
             }
             AnimatedVisibility(
@@ -2989,21 +3259,18 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
                 exit = shrinkVertically(tween(180), shrinkTowards = Alignment.Top) + fadeOut(tween(120)),
             ) {
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 34.dp).clickable(enabled = thread.backend != "antigravity") {
-                    settings = true
-                    // Pi's dialog loads its own model catalog from PI WEB.
-                    if (thread.backend == "codex") vm.capabilities()
-                    if (backendHasThreadSettings(thread.backend)) vm.loadSettings(thread.id)
-                }.padding(horizontal = 12.dp),
+                Modifier.fillMaxWidth().heightIn(min = 34.dp)
+                    .then(if (StudioLayout) Modifier else Modifier.clickable(onClick = openThreadSettings))
+                    .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 ConnectionBadge(connection, connectionStatus)
                 Spacer(Modifier.width(10.dp))
-                Text(
+                if (StudioLayout) Spacer(Modifier.weight(1f)) else Text(
                     when (thread.backend) {
                         "claude" -> claudeSettingsSummary(currentSettings, claudeModels)
                         "pi" -> "Pi · " + shortModelName(thread.model.substringAfter('/')).ifBlank { "默认模型" }
-                        "antigravity" -> "反重力 · " + shortModelName(thread.model).ifBlank { "电脑上的模型设置" }
+                        "antigravity" -> "反重力 · " + antigravityModelLabel(currentSettings, thread.model).ifBlank { "电脑上的模型设置" }
                         "dsh" -> "DeepSeek · " + shortModelName(thread.model.substringAfter('/')).ifBlank { "电脑上的模型设置" }
                         "hermes" -> "Hermes · " + hermesModelLabel(currentSettings.model ?: thread.model)
                         else -> taskSettingsSummary(currentSettings, caps)
@@ -3029,7 +3296,7 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
                     Text("切换中…", color = Accent, style = MaterialTheme.typography.labelMedium, maxLines = 1)
                     Spacer(Modifier.width(4.dp))
                 }
-                if (thread.backend != "antigravity") Icon(Icons.Default.ExpandMore, "设置模型、强度和速度", Modifier.size(20.dp), tint = if (ChatLayout) Muted else Accent)
+                if (!StudioLayout) Icon(Icons.Default.ExpandMore, "设置模型、强度和速度", Modifier.size(20.dp), tint = if (ChatLayout) Muted else Accent)
                 AnimatedVisibility(
                     visible = showTaskStatusInToolbar(taskStatus),
                     enter = fadeIn(tween(160)) + scaleIn(KhMotion.pop(), initialScale = 0.7f),
@@ -3049,6 +3316,10 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
                 }
             }
             }
+            (outputSpeed?.let { "最近请求${outputSpeedLabel(it)}" } ?: liveTextRate)?.let { speed ->
+                Text(speed, Modifier.fillMaxWidth().clickable { showTokenUsage = true }.padding(horizontal = 14.dp, vertical = 3.dp),
+                    color = Muted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+            }
             // Cached messages are already usable. Keep the background latest
             // page refresh invisible instead of making the header look like a
             // blocking reload every time the user re-enters a task.
@@ -3056,6 +3327,7 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
             // Kept up while the prompt is known, so a brief status flicker cannot drop
             // the answer being typed.
             UploadIssueBar(vm)
+            ComputerLockedBar(vm, thread.connectorId)
             // Drops in from the top when the computer starts waiting for you.
             pendingCodexQuestion?.let { pending ->
                 Surface(color = P.waitingChip, modifier = Modifier.fillMaxWidth()) {
@@ -3207,6 +3479,7 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
                 }
             }
             val canSend = (text.isNotBlank() || uploadedAttachments.isNotEmpty()) && !hasUploadingAttachment && !accountSwitching
+            if (stopping) Text("正在停止…", color = Muted, style = MaterialTheme.typography.labelMedium)
             if (accountSwitching) Text("电脑正在切换 Claude 账号，草稿已保留", color = Muted, style = MaterialTheme.typography.labelMedium)
             // Running and something to send: choose how it goes.
             AnimatedVisibility(
@@ -3216,12 +3489,12 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
             ) {
                 SendModeToggle(steerMode, Modifier.padding(start = 44.dp, top = 2.dp)) { haptics.tick(); steerMode = it }
             }
-            if (CodexLayout) {
+            if (CodexLayout || StudioLayout) {
                 val sendNow = turnBusy && steerMode
                 val modelLabel = when (thread.backend) {
                     "claude" -> claudeSettingsSummary(currentSettings, claudeModels)
                     "pi" -> shortModelName(thread.model.substringAfter('/')).ifBlank { "默认模型" }
-                    "antigravity" -> shortModelName(thread.model).ifBlank { "电脑上的模型" }
+                    "antigravity" -> antigravityModelLabel(currentSettings, thread.model).ifBlank { "电脑上的模型" }
                     "dsh" -> shortModelName(thread.model.substringAfter('/')).ifBlank { "电脑上的模型" }
                     "hermes" -> hermesModelLabel(currentSettings.model ?: thread.model)
                     else -> taskSettingsSummary(currentSettings, caps).split(" · ").take(2).joinToString(" · ")
@@ -3231,17 +3504,14 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
                     onTextChange = { value -> text = value; if (draftLoaded) vm.saveDraft(thread.id, value) },
                     hint = if (activeNextSteps.isNotEmpty() && !turnBusy) "输入你的反馈…" else "和 ${LocalAgentName.current} 一起工作",
                     model = modelLabel,
-                    modelEnabled = thread.backend != "antigravity",
-                    openModel = {
-                        settings = true
-                        if (thread.backend == "codex") vm.capabilities()
-                        if (backendHasThreadSettings(thread.backend)) vm.loadSettings(thread.id)
-                    },
+                    modelEnabled = true,
+                    openModel = openThreadSettings,
                     attachmentEnabled = !hasUploadingAttachment,
                     canAttach = thread.backend != "antigravity",
                     chooseImage = { imagePicker.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     chooseFile = { attachment.launch(arrayOf("*/*")) },
                     busy = turnBusy,
+                    showStop = turnBusy && !stopping,
                     queue = turnBusy && !sendNow,
                     canSend = canSend,
                     stop = { haptics.tick(); vm.stop(thread.id) },
@@ -3337,9 +3607,9 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
                 // Keep Send at the right edge when a running status arrives.
                 // Appending Stop there could turn a tap on Send into Stop.
                 AnimatedVisibility(
-                    visible = turnBusy,
+                    visible = turnBusy && !stopping,
                     enter = fadeIn(tween(160)) + scaleIn(KhMotion.pop(), initialScale = 0.5f),
-                    exit = fadeOut(tween(120)) + scaleOut(tween(160), targetScale = 0.6f),
+                    exit = if (stopping) androidx.compose.animation.ExitTransition.None else fadeOut(tween(120)) + scaleOut(tween(160), targetScale = 0.6f),
                 ) {
                     Row {
                         OutlinedIconButton(
@@ -3403,8 +3673,8 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
         Box(Modifier.fillMaxSize().padding(pad)) {
             val executingRoom by androidx.compose.animation.core.animateDpAsState(if (taskExecuting) 66.dp else 10.dp, KhMotion.element(), label = "executing-room")
             val railTab = backendTab(thread.backend)
-            val railWidth = when (railTab) { "claude" -> 11.dp; "codex" -> 6.dp; else -> 0.dp }
-            if (railWidth > 0.dp) QuotaRail(vm, railTab, caps, Modifier.align(Alignment.CenterStart).padding(bottom = executingRoom))
+            val railWidth = when (railTab) { "claude" -> 20.dp; "codex" -> 16.dp; else -> 0.dp }
+            if (railWidth > 0.dp) QuotaRail(vm, railTab, caps, railWidth, Modifier.align(Alignment.CenterStart).padding(bottom = executingRoom))
             LazyColumn(
                 Modifier.fillMaxSize().padding(start = railWidth),
                 state = messageListState,
@@ -3431,26 +3701,28 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
                                 requestJumpToLatest()
                             }
                             "sentFiles" -> SentFilesBlock(block.item)
-                            "toolImages" -> if (block.item.light) LightDetailsNotice("工具返回的图片留在电脑上", block.item.id in lightFetching) {
+                            "toolImages" -> if (block.item.light) LightDetailsNotice("工具返回的图片留在电脑上", block.item.id in lightFetching, lightProgress[block.item.id]) {
                                 vm.fetchLightDetails(thread.id, listOf(block.item))
-                            } else MessageBlock(block.item, showGeneratedImages = !taskExecuting, turnUsage = turnFooters[block.item.id], tokenUnit = tokenDisplayUnit) { previewHistoryImage = it }
+                            } else MessageBlock(block.item, showGeneratedImages = showGeneratedImagesForItem(block.item.id, previousTurnIds, taskExecuting), tokenUnit = tokenDisplayUnit) { previewHistoryImage = it }
                             "claudeTaskList" -> block.item.taskList?.let { ClaudeTaskListCard(block.item, it, taskExecuting && block.item.id == liveTaskListId) }
-                            "codexQuestion" -> CodexQuestionCard(block.item.questions, questionAnswers, pendingAnswers) { question, answer ->
-                                vm.answerCodexQuestion(thread, question, answer)
-                            }
+                            "codexQuestion" -> CodexQuestionCard(block.item.questions, questionAnswers, pendingAnswers, codexAnswerDrafts,
+                                { question, answer -> vm.answerCodexQuestion(thread, question, answer) },
+                                { question, answer -> vm.setCodexAnswerDraft(thread.id, question.id, answer) },
+                                { questions -> vm.answerCodexQuestions(thread, questions) })
                             else -> MessageBlock(
                                 block.item,
-                                showGeneratedImages = !taskExecuting,
-                                turnUsage = turnFooters[block.item.id],
+                                showGeneratedImages = showGeneratedImagesForItem(block.item.id, previousTurnIds, taskExecuting),
+                                usageFooter = messageFooters[block.item.id],
                                 tokenUnit = tokenDisplayUnit,
                             ) { previewHistoryImage = it }
                         }
                         is HistoryBlock.ActivityGroup -> ActivityGroupBlock(
                             block.items,
                             active = taskExecuting && block.key == latestActivityGroupKey(historyBlocks),
-                            showGeneratedImages = !taskExecuting,
+                            showGeneratedImages = showGeneratedImagesForItem(block.items.first().id, previousTurnIds, taskExecuting),
                             onImageClick = { previewHistoryImage = it },
                             fetchingDetails = block.items.firstOrNull { it.light }?.id in lightFetching,
+                            progressPercent = block.items.firstOrNull { it.light }?.id?.let { lightProgress[it] },
                             onFetchDetails = { vm.fetchLightDetails(thread.id, block.items.filter { it.light }) },
                         )
                     }
@@ -3522,7 +3794,10 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
     }
     // A question Codex just asked here; another task's shows as a notification.
     askedNow?.takeIf { it.threadId == thread.id }?.let { prompt ->
-        CodexQuestionDialog(prompt, questionAnswers, pendingAnswers, { question, answer -> vm.answerCodexQuestion(thread, question, answer) }, vm::dismissCodexQuestion)
+        CodexQuestionDialog(prompt, questionAnswers, pendingAnswers, codexAnswerDrafts,
+            { question, answer -> vm.answerCodexQuestion(thread, question, answer) },
+            { question, answer -> vm.setCodexAnswerDraft(thread.id, question.id, answer) },
+            { questions -> vm.answerCodexQuestions(thread, questions) }, vm::dismissCodexQuestion)
     }
     // Only this conversation's request; another task's shows as a notification.
     // Closed as soon as it is answered; it comes back only if the computer does not confirm.
@@ -3538,6 +3813,10 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
     if (settings && thread.backend == "claude") ClaudeSettingsDialog(currentSettings, claudeModels, thread.desktopLive, { settings = false }) { model, effort, permissionMode -> vm.claudeSettings(thread.id, thread.title, model, effort, permissionMode); settings = false }
     else if (settings && thread.backend == "dsh") DshSettingsDialog(currentSettings, dshCatalog, { settings = false }) { model, effort, permission -> vm.dshSettings(thread.id, model, effort, permission); settings = false }
     else if (settings && thread.backend == "hermes") DshSettingsDialog(currentSettings, hermesCatalog, { settings = false }, title = "Hermes 模型与专家会诊", loading = "正在读取 Hermes 模型…") { model, effort, _ -> vm.dshSettings(thread.id, model, effort); settings = false }
+    else if (settings && thread.backend == "antigravity") DshSettingsDialog(
+        currentSettings, antigravityCatalog, { settings = false }, title = "反重力模型与权限", loading = "正在读取电脑上反重力的设置…",
+        riskyPermission = "Turbo", note = "在电脑上的反重力里切换，下一条消息起生效；权限只改这个对话。",
+    ) { model, effort, permission -> vm.dshSettings(thread.id, model, effort, permission); settings = false }
     else if (settings && thread.backend == "pi") PiSettingsDialog(vm, thread.id) { settings = false }
     else if (settings) SettingsDialog(caps, currentSettings, { settings = false }) { changes -> vm.settings(thread.id, thread.title, changes); settings = false }
     if (dshAnswerOpen) DshAnswerDialog(dshPending, dshPendingLoading, close = { dshAnswerOpen = false }) { option ->
@@ -3545,8 +3824,10 @@ private fun ThreadScreen(vm: BridgeViewModel, thread: ThreadSummary, back: () ->
         vm.answerDsh(thread.id, option)
     }
     LaunchedEffect(thread.id, thread.backend) { if (thread.backend == "claude") { vm.loadSettings(thread.id); if (claudeModels.isEmpty()) vm.backendCapabilities() } }
+    LaunchedEffect(settings, thread.id, thread.backend) { if (settings && thread.backend == "claude" && connection == ConnectionState.Online) vm.backendCapabilities(thread.id) }
     if (rename) RenameDialog(thread.title, { rename = false }) { vm.rename(thread.id, it); rename = false }
     if (showTokenUsage) ConversationUsageDialog(thread.id, usageState[thread.id], thread.id in usageLoading, connection == ConnectionState.Online, tokenDisplayUnit,
+        textSpeed = liveTextRate ?: messageFooters.values.lastOrNull { it.latestReply }?.textSpeed,
         refresh = { vm.loadConversationUsage(thread.id) }, dismiss = { showTokenUsage = false })
     previewAttachment?.let { AttachmentPreviewDialog(it) { previewAttachment = null } }
     previewHistoryImage?.let { HistoryImagePreviewDialog(it) { previewHistoryImage = null } }
@@ -3970,6 +4251,9 @@ private fun AccountDialog(
     var legalDocument by rememberSaveable { mutableStateOf<String?>(null) }
     val guideVm: BridgeViewModel = viewModel()
     val autoDownloadUpdates by guideVm.autoDownloadUpdates.collectAsState()
+    val computers by guideVm.computerScreens.collectAsState()
+    val selectedComputer by guideVm.selectedConnectorId.collectAsState()
+    val computerConnection by guideVm.connection.collectAsState()
     AppSettingsScreen(account, v2, scrollState, visibleAgents, agentOrder, unit, unitChanged, close,
         agentSettings, devices, fetchedFiles, update, password, markAllRead, logout,
         direct, restoreServer, piSettings, theme = { themeOpen = true }, legal = { legalDocument = "support" },
@@ -3978,7 +4262,9 @@ private fun AccountDialog(
         lightMode = lightMode, lightModeChanged = lightModeChanged,
         showPcLoad = showPcLoad, showPcLoadChanged = showPcLoadChanged,
         claudeStatusline = claudeStatusline, claudeStatuslineChanged = claudeStatuslineChanged,
-        autoDownloadUpdates = autoDownloadUpdates, autoDownloadUpdatesChanged = guideVm::saveAutoDownloadUpdates)
+        autoDownloadUpdates = autoDownloadUpdates, autoDownloadUpdatesChanged = guideVm::saveAutoDownloadUpdates,
+        computerScreen = selectedComputerScreen(selectedComputer, computers), computerOnline = computerConnection == ConnectionState.Online,
+        computerKeepAwakeChanged = guideVm::setComputerKeepAwake)
     if (themeOpen) ThemeDialog { themeOpen = false }
     legalDocument?.let { LegalDocumentDialog(it) { legalDocument = null } }
 }
@@ -4207,7 +4493,7 @@ private fun ClaudeWorkspaceTrustDialog(
 private fun MessageBlock(
     item: HistoryItem,
     showGeneratedImages: Boolean = true,
-    turnUsage: CompletedTurnTokenUsage? = null,
+    usageFooter: MessageUsageFooter? = null,
     tokenUnit: TokenDisplayUnit = TokenDisplayUnit.TenThousands,
     onImageClick: (HistoryImage) -> Unit,
 ) {
@@ -4217,10 +4503,10 @@ private fun MessageBlock(
     val inlineThinking = item.type == "reasoning" && LocalAgentName.current == "Claude"
     val collapsible = (item.type == "reasoning" && !inlineThinking) || isActivityItem(item)
     if (FlatLayout && !collapsible) {
-        CodexMessage(item, user, inlineThinking, showGeneratedImages, turnUsage, tokenUnit, onImageClick)
+        CodexMessage(item, user, inlineThinking, showGeneratedImages, usageFooter, tokenUnit, onImageClick)
         return
     }
-    if (ChatLayout && !collapsible && !inlineThinking) { ChatBubble(item, user, showGeneratedImages, turnUsage, tokenUnit, onImageClick); return }
+    if (ChatLayout && !collapsible && !inlineThinking) { ChatBubble(item, user, showGeneratedImages, usageFooter, tokenUnit, onImageClick); return }
     var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
     val label = itemLabel(item, LocalAgentName.current)
     val panelColor = when {
@@ -4321,7 +4607,8 @@ private fun MessageBlock(
                 } else {
                     Text(itemPreview(item), maxLines = 2, overflow = TextOverflow.Ellipsis, color = Muted, style = MaterialTheme.typography.bodySmall)
                 }
-                historyItemTimestamp(item)?.let { timestamp ->
+                val timestamp = historyItemTimestamp(item)
+                if (timestamp != null || usageFooter != null) {
                     Row(
                         Modifier.fillMaxWidth().padding(top = 4.dp),
                         horizontalArrangement = if (user) Arrangement.End else Arrangement.Start,
@@ -4335,8 +4622,8 @@ private fun MessageBlock(
                             Spacer(Modifier.width(6.dp))
                         }
                         if (user && item.text.isNotBlank()) { CopyMessageButton(item.text); Spacer(Modifier.width(4.dp)) }
-                        if (user) Text(formatMessageTime(timestamp), color = Muted, style = MaterialTheme.typography.labelSmall)
-                        else MessageTimeAndUsage(timestamp, turnUsage, tokenUnit, Modifier.weight(1f, fill = false))
+                        if (user && timestamp != null) Text(formatMessageTime(timestamp), color = Muted, style = MaterialTheme.typography.labelSmall)
+                        else MessageTimeAndUsage(timestamp, usageFooter, tokenUnit, Modifier.weight(1f, fill = false))
                     }
                 }
                 // On its way: a thin bar under the text until the computer has it.
@@ -4353,7 +4640,7 @@ private fun CodexMessage(
     user: Boolean,
     inlineThinking: Boolean,
     showGeneratedImages: Boolean,
-    turnUsage: CompletedTurnTokenUsage?,
+    usageFooter: MessageUsageFooter?,
     tokenUnit: TokenDisplayUnit,
     onImageClick: (HistoryImage) -> Unit,
 ) {
@@ -4387,6 +4674,10 @@ private fun CodexMessage(
         return
     }
     Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+        if (StudioLayout && !inlineThinking) {
+            Text(homeTabLabel(LocalAgentBackend.current, 6), Modifier.padding(bottom = 8.dp),
+                color = Ink, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        }
         SelectionContainer {
             if (inlineThinking) Text(item.text, color = Muted, style = MaterialTheme.typography.bodySmall, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
             else if (item.text.isNotBlank()) KhLinkMarkdown(item.text, Modifier.fillMaxWidth())
@@ -4398,11 +4689,10 @@ private fun CodexMessage(
             Text(itemStatusLabel(it), color = statusColor(it), style = MaterialTheme.typography.labelSmall)
         }
         val timestamp = historyItemTimestamp(item)
-        if (item.text.isNotBlank() || timestamp != null || turnUsage != null) {
+        if (item.text.isNotBlank() || timestamp != null || usageFooter != null) {
             Row(Modifier.padding(top = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (item.text.isNotBlank()) { CopyMessageButton(item.text); Spacer(Modifier.width(4.dp)) }
-                if (timestamp != null) MessageTimeAndUsage(timestamp, turnUsage, tokenUnit)
-                else if (turnUsage != null) Text(completedTurnTokenLabel(turnUsage, tokenUnit), color = Muted, style = MaterialTheme.typography.labelSmall)
+                MessageTimeAndUsage(timestamp, usageFooter, tokenUnit)
             }
         }
     }
@@ -4421,6 +4711,7 @@ private fun CodexComposer(
     chooseImage: () -> Unit,
     chooseFile: () -> Unit,
     busy: Boolean,
+    showStop: Boolean,
     queue: Boolean,
     canSend: Boolean,
     stop: () -> Unit,
@@ -4473,7 +4764,7 @@ private fun CodexComposer(
                     Text(model, Modifier.weight(1f, fill = false), color = Ink, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (modelEnabled) Icon(Icons.Default.ExpandMore, null, Modifier.size(16.dp), tint = Muted)
                 }
-                if (busy) {
+                if (showStop) {
                     OutlinedIconButton(stop, Modifier.size(38.dp), shape = CircleShape, border = BorderStroke(1.dp, Danger.copy(alpha = 0.6f))) {
                         Icon(Icons.Default.Stop, "停止", Modifier.size(17.dp), tint = Danger)
                     }
@@ -4572,7 +4863,7 @@ private fun OutboundProgress(active: Boolean, modifier: Modifier = Modifier) {
  * centered time only when five minutes have passed since the last one.
  */
 @Composable
-private fun ChatBubble(item: HistoryItem, user: Boolean, showGeneratedImages: Boolean, turnUsage: CompletedTurnTokenUsage?, tokenUnit: TokenDisplayUnit, onImageClick: (HistoryImage) -> Unit) {
+private fun ChatBubble(item: HistoryItem, user: Boolean, showGeneratedImages: Boolean, usageFooter: MessageUsageFooter?, tokenUnit: TokenDisplayUnit, onImageClick: (HistoryImage) -> Unit) {
     val backend = LocalAgentBackend.current
     val showTime = item.id in LocalChatTimeMarks.current
     Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
@@ -4599,15 +4890,13 @@ private fun ChatBubble(item: HistoryItem, user: Boolean, showGeneratedImages: Bo
                         if (item.truncated) Text("内容较长，已保留摘要与首尾片段", color = Warm, style = MaterialTheme.typography.labelSmall)
                     }
                 }
-                // WeChat says nothing once a message is through; only waiting is worth words.
-                if (user && (item.status == "waiting" || item.status == "steered")) {
+                // Keep Codex's in-flight state readable alongside the small spinner.
+                if (user && (item.status in setOf("waiting", "steered") || (backend == "codex" && item.status == "sending"))) {
                     Text(itemStatusLabel(item.status!!), Modifier.padding(top = 3.dp, end = WeChatTail), color = Color(0xFFB2B2B2), fontSize = 11.sp)
                 }
-                if (!user && turnUsage != null) Text(
-                    completedTurnTokenLabel(turnUsage, tokenUnit),
-                    Modifier.padding(top = 3.dp, start = WeChatTail + 2.dp),
-                    color = Color(0xFFB2B2B2), fontSize = 11.sp,
-                )
+                if (!user && usageFooter != null) {
+                    MessageTimeAndUsage(null, usageFooter, tokenUnit, Modifier.padding(top = 3.dp, start = WeChatTail + 2.dp))
+                }
             }
             if (user) { Spacer(Modifier.width(ChatAvatarGap)); ChatSelfAvatar() } else Spacer(Modifier.width(ChatIndent))
         }
@@ -4684,12 +4973,19 @@ private class WeChatBubbleShape(private val tailOnRight: Boolean) : androidx.com
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun MessageTimeAndUsage(timestamp: Long, turn: CompletedTurnTokenUsage?, unit: TokenDisplayUnit, modifier: Modifier = Modifier) {
+private fun MessageTimeAndUsage(timestamp: Long?, footer: MessageUsageFooter?, unit: TokenDisplayUnit, modifier: Modifier = Modifier) {
+    var detailsOpen by remember(footer?.turn?.turnId) { mutableStateOf(false) }
+    val turn = footer?.turn
+    if (detailsOpen && turn != null) TurnUsageDialog(turn) { detailsOpen = false }
+    val style = MaterialTheme.typography.labelSmall
     FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(formatMessageTime(timestamp), color = Muted.copy(alpha = 0.65f), style = MaterialTheme.typography.labelSmall)
-        turn?.let {
-            Text(completedTurnTokenLabel(it, unit), color = Muted, style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.semantics { contentDescription = "本轮 Token ${if (it.partial) "已记录" else "消耗"} ${formatTokenCount(it.usage.total)}，含输入和输出" })
+        timestamp?.let { Text(formatMessageTime(it), color = Muted.copy(alpha = 0.65f), style = style) }
+        footer?.let {
+            val summary = it.summary(unit)
+            if (summary.isNotEmpty()) Text(summary, color = Muted, style = style,
+                modifier = Modifier.then(if (turn != null) Modifier.clickable(role = Role.Button, onClickLabel = "查看本轮统计") {
+                    detailsOpen = true
+                }.padding(vertical = 4.dp) else Modifier).semantics { contentDescription = it.summary(unit, exact = true) })
         }
     }
 }
@@ -4723,6 +5019,7 @@ private fun ActivityGroupBlock(
     showGeneratedImages: Boolean = true,
     onImageClick: (HistoryImage) -> Unit,
     fetchingDetails: Boolean = false,
+    progressPercent: Int? = null,
     onFetchDetails: () -> Unit = {},
 ) {
     // Images in thinking/tool activity are details, not generated answers.
@@ -4753,7 +5050,7 @@ private fun ActivityGroupBlock(
             HorizontalDivider(color = Divider)
             if (expanded) {
                 val waiting = items.count { it.light }
-                if (waiting > 0) LightDetailsNotice("$waiting 项操作的详细过程留在电脑上", fetchingDetails, onFetchDetails)
+                if (waiting > 0) LightDetailsNotice("$waiting 项操作的详细过程留在电脑上", fetchingDetails, progressPercent, onFetchDetails)
                 val shown = entries.filterNot { it.primary.light }
                 shown.forEachIndexed { index, entry ->
                     ActivityRow(entry, showGeneratedImages, onImageClick)
@@ -4791,7 +5088,7 @@ private fun ActivityGroupBlock(
                 HorizontalDivider(Modifier.padding(vertical = 2.dp), color = Divider.copy(alpha = 0.7f))
                 // Light mode: steps whose details stayed on the computer.
                 val waiting = items.count { it.light }
-                if (waiting > 0) LightDetailsNotice("$waiting 项操作的详细过程留在电脑上", fetchingDetails, onFetchDetails)
+                if (waiting > 0) LightDetailsNotice("$waiting 项操作的详细过程留在电脑上", fetchingDetails, progressPercent, onFetchDetails)
                 val shown = entries.filterNot { it.primary.light }
                 shown.forEachIndexed { index, entry ->
                     ActivityRow(entry, showGeneratedImages, onImageClick)
@@ -4804,9 +5101,9 @@ private fun ActivityGroupBlock(
 
 /** Light mode: details left on the computer, fetched (and kept on the phone) on request. */
 @Composable
-private fun LightDetailsNotice(text: String, fetching: Boolean, fetch: () -> Unit) {
+private fun LightDetailsNotice(text: String, fetching: Boolean, progressPercent: Int? = null, fetch: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(start = 28.dp, top = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(if (fetching) "正在查找，较旧的详情可能需要几分钟" else text, Modifier.weight(1f), color = Muted, style = MaterialTheme.typography.bodySmall)
+        Text(if (fetching) progressPercent?.let { "正在取回 $it%" } ?: "正在查找详情…" else text, Modifier.weight(1f), color = Muted, style = MaterialTheme.typography.bodySmall)
         if (fetching) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Accent)
         else TextButton(fetch, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)) {
             Text("从电脑取回", style = MaterialTheme.typography.labelMedium)
@@ -4815,19 +5112,25 @@ private fun LightDetailsNotice(text: String, fetching: Boolean, fetch: () -> Uni
 }
 
 @Composable
-internal fun KhLinkMarkdown(content: String, modifier: Modifier = Modifier) {
-    val body = MaterialTheme.typography.bodyMedium
-    val bodySmall = MaterialTheme.typography.bodySmall
-    val heading1 = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-    val heading2 = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-    val heading3 = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold)
+internal fun KhLinkMarkdown(content: String, modifier: Modifier = Modifier, reader: MarkdownReaderConfig? = null) {
+    val reading = reader?.style
+    val body = if (reading == null) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge.copy(
+        color = reading.ink, fontFamily = reading.font, fontSize = 16.sp, lineHeight = 26.sp,
+    )
+    val bodySmall = if (reading == null) MaterialTheme.typography.bodySmall else body.copy(fontSize = 14.sp, lineHeight = 22.sp)
+    val heading1 = if (reading == null) MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold) else body.copy(fontSize = 26.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold)
+    val heading2 = if (reading == null) MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold) else body.copy(fontSize = 21.sp, lineHeight = 29.sp, fontWeight = FontWeight.Bold)
+    val heading3 = if (reading == null) MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold) else body.copy(fontSize = 18.sp, lineHeight = 26.sp, fontWeight = FontWeight.Bold)
     val heading4 = body.copy(fontWeight = FontWeight.Bold)
     val code = bodySmall.copy(fontFamily = FontFamily.Monospace)
     // A link to a file on the computer asks before fetching it; web links open as before.
-    val files = LocalComputerFiles.current
+    val chatFiles = LocalComputerFiles.current
+    val files = if (reader == null) chatFiles else remember(reader.view.path, reader.view.threadId, reader.vm) {
+        ComputerFileSource(reader.view.threadId, "", reader.vm)
+    }
     val web = androidx.compose.ui.platform.LocalUriHandler.current
     val context = LocalContext.current
-    val uriHandler = remember(files, web, context) {
+    val uriHandler = remember(files, web, context, reader?.view?.path) {
         object : androidx.compose.ui.platform.UriHandler {
             override fun openUri(uri: String) {
                 // A link to another desktop session ("#local_…") opens that conversation here.
@@ -4838,9 +5141,10 @@ internal fun KhLinkMarkdown(content: String, modifier: Modifier = Modifier) {
                     else android.widget.Toast.makeText(context, "这个对话还没同步到手机", android.widget.Toast.LENGTH_SHORT).show()
                     return
                 }
-                val path = files?.let { computerPathFromLink(uri, it.cwd) }
+                val path = if (reader != null) resolveMarkdownComputerPath(uri, reader.view.path)
+                    else files?.let { computerPathFromLink(uri, it.cwd) }
                 when {
-                    path != null -> files.vm.askComputerFile(path)
+                    path != null && files != null -> files.vm.askComputerFile(path, files.threadId)
                     files != null && isWebVideoLink(uri) -> files.vm.askWebVideo(uri)
                     else -> runCatching { web.openUri(uri) }
                 }
@@ -4855,19 +5159,30 @@ internal fun KhLinkMarkdown(content: String, modifier: Modifier = Modifier) {
     // Paths written as inline code, local links the renderer cannot read and a
     // code block holding one path become tappable file links in a conversation.
     // Windows line endings (a .md file fetched from the computer) stop the parser from seeing tables.
-    val shown = remember(content, files != null) {
-        val text = compactLocalMarkdownImages(content.replace("\r\n", "\n"))
-        fixCjkEmphasis(if (files != null) linkifyComputerPaths(linkifyLocalFileLinks(text)) else text)
+    val shown = remember(content, files != null, reader != null) {
+        val text = content.replace("\r\n", "\n")
+        if (reader != null) fixCjkEmphasis(text)
+        else {
+            val compact = compactLocalMarkdownImages(text)
+            fixCjkEmphasis(if (files != null) linkifyComputerPaths(linkifyLocalFileLinks(compact)) else compact)
+        }
     }
     val markdownState = com.mikepenz.markdown.model.rememberMarkdownState(
         content = shown,
         flavour = MarkdownFlavour,
         parser = MarkdownParserShared,
-        immediate = true,
+        immediate = reader == null,
     )
-    androidx.compose.runtime.CompositionLocalProvider(androidx.compose.ui.platform.LocalUriHandler provides uriHandler) {
+    androidx.compose.runtime.CompositionLocalProvider(
+        androidx.compose.ui.platform.LocalUriHandler provides uriHandler,
+        LocalMarkdownReaderStyle provides reading,
+    ) {
     Markdown(
         markdownState,
+        colors = if (reading == null) com.mikepenz.markdown.m3.markdownColor() else com.mikepenz.markdown.m3.markdownColor(
+            text = reading.ink, codeBackground = reading.code, inlineCodeBackground = reading.code,
+            dividerColor = reading.divider, tableBackground = reading.table,
+        ),
         typography = markdownTypography(
             text = body,
             code = code,
@@ -4884,9 +5199,20 @@ internal fun KhLinkMarkdown(content: String, modifier: Modifier = Modifier) {
             bullet = body,
             list = body,
             table = body,
+            textLink = if (reading == null) androidx.compose.ui.text.TextLinkStyles(
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline).toSpanStyle(),
+            ) else androidx.compose.ui.text.TextLinkStyles(style = androidx.compose.ui.text.SpanStyle(color = reading.accent, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)),
         ),
+        imageTransformer = reader?.images ?: com.mikepenz.markdown.model.NoOpImageTransformerImpl(),
         components = KhLinkMarkdownComponents,
         modifier = modifier,
+        success = { state, components, innerModifier ->
+            if (reader == null) com.mikepenz.markdown.compose.MarkdownSuccess(state, components, innerModifier)
+            else com.mikepenz.markdown.compose.LazyMarkdownSuccess(
+                state, components, innerModifier,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 18.dp),
+            )
+        },
     )
     }
 }
@@ -4964,6 +5290,9 @@ internal fun tableColumnWidths(min: List<Float>, natural: List<Float>, available
 
 @Composable
 private fun KhLinkMarkdownTable(model: com.mikepenz.markdown.compose.components.MarkdownComponentModel) {
+    val readerStyle = LocalMarkdownReaderStyle.current
+    val borderColor = readerStyle?.divider ?: Divider
+    val headerColor = readerStyle?.table ?: SurfaceAlt
     val content = model.content
     val rows = remember(content, model.node) { tableRows(model.node) }
     if (rows.isEmpty()) return
@@ -5014,15 +5343,15 @@ private fun KhLinkMarkdownTable(model: com.mikepenz.markdown.compose.components.
         Surface(
             Modifier.horizontalScroll(rememberScrollState()),
             shape = RoundedCornerShape(6.dp),
-            border = BorderStroke(0.5.dp, Divider),
+            border = BorderStroke(0.5.dp, borderColor),
             color = Color.Transparent,
         ) {
             Column {
                 rows.forEachIndexed { index, row ->
-                    if (index > 0) HorizontalDivider(Modifier.width(widths.fold(0.5.dp * (columns - 1)) { sum, width -> sum + width }), color = Divider.copy(alpha = 0.6f))
-                    Row(Modifier.then(if (index == 0) Modifier.background(SurfaceAlt) else Modifier).height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
+                    if (index > 0) HorizontalDivider(Modifier.width(widths.fold(0.5.dp * (columns - 1)) { sum, width -> sum + width }), color = borderColor.copy(alpha = 0.6f))
+                    Row(Modifier.then(if (index == 0) Modifier.background(headerColor) else Modifier).height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
                         for (column in 0 until columns) {
-                            if (column > 0) Box(Modifier.width(0.5.dp).fillMaxHeight().background(Divider.copy(alpha = 0.6f)))
+                            if (column > 0) Box(Modifier.width(0.5.dp).fillMaxHeight().background(borderColor.copy(alpha = 0.6f)))
                             Box(Modifier.width(widths[column]).padding(horizontal = TableCellPadding, vertical = 6.dp)) {
                                 row.getOrNull(column)?.let { cell ->
                                     com.mikepenz.markdown.compose.elements.MarkdownTableBasicText(
@@ -5064,7 +5393,7 @@ private fun InlineMediaCaption(raw: String) {
 @Composable
 private fun InlineComputerImage(source: ComputerFileSource, path: String, alt: String) {
     val file by produceState<java.io.File?>(null, path) {
-        value = runCatching { source.vm.loadInlineComputerFile(path) }.getOrNull()
+        value = runCatching { source.vm.loadInlineComputerFile(path, source.threadId) }.getOrNull()
     }
     val bitmap by produceState<Bitmap?>(null, file) {
         value = withContext(Dispatchers.IO) { file?.let { decodeInlineBitmap(it) } }
@@ -5090,10 +5419,18 @@ private fun InlineComputerImage(source: ComputerFileSource, path: String, alt: S
 
 @Composable
 private fun InlineComputerVideo(source: ComputerFileSource, path: String, alt: String) {
-    var expanded by rememberSaveable(path) { mutableStateOf(false) }
+    var expanded by rememberSaveable(path, source.threadId) { mutableStateOf(source.vm.wasInlineVideoRequested(path, source.threadId)) }
+    var failed by remember(path, source.threadId) { mutableStateOf<String?>(null) }
+    val transfers by source.vm.computerFileTransfers.collectAsState()
+    val shared = source.vm.computerFileTransferKey(path, source.threadId)?.let { transfers[it] }
+    val cached by produceState<java.io.File?>(null, path, source.threadId, shared == null) {
+        value = source.vm.cachedInlineComputerFile(path, source.threadId)
+    }
     if (!expanded) {
         Surface(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { expanded = true },
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
+                failed = null; source.vm.rememberInlineVideo(path, source.threadId); expanded = true
+            },
             color = SurfaceAlt,
             shape = RoundedCornerShape(12.dp),
             border = BorderStroke(0.5.dp, Divider),
@@ -5103,21 +5440,33 @@ private fun InlineComputerVideo(source: ComputerFileSource, path: String, alt: S
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(alt.ifBlank { "视频" }, color = Ink, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("点击加载视频", color = Muted, style = MaterialTheme.typography.labelSmall)
+                    val label = failed ?: when {
+                        shared != null && shared.total > 0 -> "正在取回 ${formatBytes(shared.received)} / ${formatBytes(shared.total)}"
+                        shared != null -> "正在取回视频…"
+                        cached != null -> "点击播放"
+                        else -> "点击加载视频"
+                    }
+                    Text(label, color = if (failed == null) Muted else Danger, style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
         return
     }
-    val file by produceState<java.io.File?>(null, path) {
-        value = runCatching { source.vm.loadInlineComputerFile(path) }.getOrNull()
+    val file by produceState<java.io.File?>(null, path, source.threadId) {
+        try { value = source.vm.loadInlineComputerFile(path, source.threadId) }
+        catch (error: kotlinx.coroutines.CancellationException) {
+            if (kotlinx.coroutines.currentCoroutineContext()[Job]?.isActive != true) throw error
+            source.vm.forgetInlineVideo(path, source.threadId); failed = "已取消取回，点击重试"; expanded = false
+        } catch (error: Exception) {
+            source.vm.forgetInlineVideo(path, source.threadId); failed = error.message ?: "视频取回失败，点击重试"; expanded = false
+        }
     }
     val loaded = file
     if (loaded == null) {
         Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Accent)
             Spacer(Modifier.width(8.dp))
-            Text("正在加载视频…", color = Muted, style = MaterialTheme.typography.bodySmall)
+            Text(if (shared != null && shared.total > 0) "正在取回 ${formatBytes(shared.received)} / ${formatBytes(shared.total)}" else "正在加载视频…", color = Muted, style = MaterialTheme.typography.bodySmall)
         }
     } else {
         InlineVideo(source, loaded, path, RoundedCornerShape(12.dp))
@@ -5154,7 +5503,7 @@ private fun SentFilesBlock(item: HistoryItem) {
 @Composable
 private fun SentFileRow(file: SentFile, source: ComputerFileSource?) {
     Surface(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(if (ChatLayout) 4.dp else 12.dp)).then(if (source != null) Modifier.clickable { source.vm.askComputerFile(file.path) } else Modifier),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(if (ChatLayout) 4.dp else 12.dp)).then(if (source != null) Modifier.clickable { source.vm.askComputerFile(file.path, source.threadId) } else Modifier),
         color = if (ChatLayout) Color.White else SurfaceAlt, shape = RoundedCornerShape(if (ChatLayout) 4.dp else 12.dp),
         border = if (ChatLayout) null else BorderStroke(0.5.dp, Divider),
     ) {
@@ -5172,25 +5521,36 @@ private fun SentFileRow(file: SentFile, source: ComputerFileSource?) {
 /** A video: nothing is fetched until tapped; then it comes over with progress and plays here, with a full-screen button. */
 @Composable
 private fun SentVideoCard(source: ComputerFileSource, file: SentFile) {
-    var requested by rememberSaveable(file.path) { mutableStateOf(false) }
-    var progress by remember(file.path) { mutableStateOf(0L to file.size) }
-    var loaded by remember(file.path) { mutableStateOf<java.io.File?>(null) }
-    var failed by remember(file.path) { mutableStateOf<String?>(null) }
-    LaunchedEffect(requested, file.path) {
+    var requested by rememberSaveable(file.path, source.threadId) { mutableStateOf(source.vm.wasInlineVideoRequested(file.path, source.threadId)) }
+    var progress by remember(file.path, source.threadId) { mutableStateOf(0L to file.size) }
+    var loaded by remember(file.path, source.threadId) { mutableStateOf<java.io.File?>(null) }
+    var failed by remember(file.path, source.threadId) { mutableStateOf<String?>(null) }
+    val transfers by source.vm.computerFileTransfers.collectAsState()
+    val shared = source.vm.computerFileTransferKey(file.path, source.threadId)?.let { transfers[it] }
+    val cached by produceState<java.io.File?>(null, file.path, source.threadId, shared == null) {
+        value = source.vm.cachedInlineComputerFile(file.path, source.threadId)
+    }
+    LaunchedEffect(requested, file.path, source.threadId) {
         if (!requested || loaded != null) return@LaunchedEffect
         failed = null
-        runCatching { source.vm.loadInlineComputerFile(file.path) { got, total -> progress = got to total } }
-            .onSuccess { loaded = it }
-            .onFailure { if (it !is kotlinx.coroutines.CancellationException) { failed = it.message ?: "视频取回失败"; requested = false } }
+        try { loaded = source.vm.loadInlineComputerFile(file.path, source.threadId) { got, total -> progress = got to total } }
+        catch (error: kotlinx.coroutines.CancellationException) {
+            if (kotlinx.coroutines.currentCoroutineContext()[Job]?.isActive != true) throw error
+            source.vm.forgetInlineVideo(file.path, source.threadId); failed = "已取消取回"; requested = false
+        } catch (error: Exception) {
+            source.vm.forgetInlineVideo(file.path, source.threadId); failed = error.message ?: "视频取回失败"; requested = false
+        }
     }
     val shape = RoundedCornerShape(if (ChatLayout) 4.dp else 12.dp)
     // Loaded: the player takes the video's own shape (a portrait clip stands taller).
     loaded?.let { video -> InlineVideo(source, video, file.path, shape); return }
     Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(shape).background(Color.Black)) {
         run {
-            Column(Modifier.fillMaxSize().clickable(enabled = !requested) { requested = true }, verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                if (requested) {
-                    val (got, total) = progress
+            Column(Modifier.fillMaxSize().clickable(enabled = !requested && shared == null) {
+                source.vm.rememberInlineVideo(file.path, source.threadId); requested = true
+            }, verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                if (requested || shared != null) {
+                    val (got, total) = shared?.let { it.received to it.total } ?: progress
                     if (total > 0) CircularProgressIndicator({ (got.toFloat() / total).coerceIn(0f, 1f) }, Modifier.size(44.dp), color = Color.White, trackColor = Color.White.copy(alpha = 0.25f), strokeWidth = 3.dp)
                     else CircularProgressIndicator(Modifier.size(44.dp), color = Color.White, strokeWidth = 3.dp)
                     Spacer(Modifier.height(8.dp))
@@ -5200,7 +5560,7 @@ private fun SentVideoCard(source: ComputerFileSource, file: SentFile) {
                         Icon(Icons.Default.PlayArrow, "加载并播放", Modifier.size(34.dp), tint = Color.White)
                     }
                     Spacer(Modifier.height(8.dp))
-                    Text(failed ?: "点击加载播放", color = if (failed != null) Color(0xFFFF8A80) else Color.White.copy(alpha = 0.85f), style = MaterialTheme.typography.labelSmall)
+                    Text(failed ?: if (cached != null) "点击播放" else "点击加载播放", color = if (failed != null) Color(0xFFFF8A80) else Color.White.copy(alpha = 0.85f), style = MaterialTheme.typography.labelSmall)
                 }
             }
             Row(Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Color.Black.copy(alpha = 0.35f)).padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -5255,8 +5615,10 @@ private val KhLinkMarkdownComponents = com.mikepenz.markdown.compose.components.
 @Composable
 private fun KhLinkCodeBlock(code: String, style: androidx.compose.ui.text.TextStyle) {
     val context = LocalContext.current
-    Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(8.dp)).background(P.codeBlock)) {
-        Text(code, Modifier.fillMaxWidth().padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 34.dp), style = style, color = Ink, softWrap = true)
+    val readerStyle = LocalMarkdownReaderStyle.current
+    val ink = readerStyle?.ink ?: Ink
+    Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(8.dp)).background(readerStyle?.code ?: P.codeBlock)) {
+        Text(code, Modifier.fillMaxWidth().padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 34.dp), style = style, color = ink, softWrap = true)
         Icon(
             Icons.Default.ContentCopy, "复制代码",
             Modifier.align(Alignment.TopEnd).padding(2.dp).size(30.dp).clip(CircleShape).clickable {
@@ -5264,7 +5626,7 @@ private fun KhLinkCodeBlock(code: String, style: androidx.compose.ui.text.TextSt
                 clipboard.setPrimaryClip(ClipData.newPlainText("khLink 代码", code))
                 Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
             }.padding(7.dp),
-            tint = Muted,
+            tint = readerStyle?.muted ?: Muted,
         )
     }
 }
@@ -5582,7 +5944,9 @@ private fun ClaudeTaskStepRow(step: ClaudeTaskStep, running: Boolean) {
 
 /** A non-blocking Codex question, answered with the desktop's original reply format. */
 @Composable
-private fun CodexQuestionCard(questions: List<CodexQuestion>, answers: Map<String, String>, pending: Map<String, String>, answer: (CodexQuestion, String) -> Unit) {
+private fun CodexQuestionCard(questions: List<CodexQuestion>, answers: Map<String, String>, pending: Map<String, String>,
+    drafts: Map<String, String>, answer: (CodexQuestion, String) -> Unit, draft: (CodexQuestion, String) -> Unit,
+    submit: (List<CodexQuestion>) -> Unit) {
     if (questions.isEmpty()) return
     Surface(
         Modifier.fillMaxWidth().padding(start = if (ChatLayout) ChatIndent else 2.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
@@ -5598,13 +5962,36 @@ private fun CodexQuestionCard(questions: List<CodexQuestion>, answers: Map<Strin
                 Spacer(Modifier.weight(1f))
                 Text("不影响任务继续执行", color = Muted, style = MaterialTheme.typography.labelSmall)
             }
-            questions.forEach { question -> CodexQuestionBody(question, answers[question.id], pending[question.id]) { answer(question, it) } }
+            CodexQuestionGroups(questions, answers, pending, drafts, answer, draft, submit)
         }
     }
 }
 
 @Composable
-private fun CodexQuestionBody(question: CodexQuestion, answered: String?, pending: String? = null, answer: (String) -> Unit) {
+private fun CodexQuestionGroups(questions: List<CodexQuestion>, answers: Map<String, String>, pending: Map<String, String>,
+    drafts: Map<String, String>, answer: (CodexQuestion, String) -> Unit, draft: (CodexQuestion, String) -> Unit,
+    submit: (List<CodexQuestion>) -> Unit) {
+    codexQuestionGroups(questions).forEach { group ->
+        val grouped = group.size > 1
+        val blocked = group.any { it.id in answers || it.id in pending }
+        group.forEach { question ->
+            CodexQuestionBody(question, answers[question.id], pending[question.id], if (grouped) drafts[question.id] else null, grouped) {
+                if (grouped) draft(question, it) else answer(question, it)
+            }
+        }
+        if (grouped && !blocked) {
+            val count = group.count { !drafts[it.id].isNullOrBlank() }
+            Text("已填写 $count / ${group.size}，全部填写后一起发送", color = Muted, style = MaterialTheme.typography.bodySmall)
+            Button(onClick = { submit(group) }, enabled = count == group.size, modifier = Modifier.fillMaxWidth()) {
+                Text("提交全部回答")
+            }
+        }
+    }
+}
+
+@Composable
+private fun CodexQuestionBody(question: CodexQuestion, answered: String?, pending: String? = null,
+    selected: String? = null, draftMode: Boolean = false, answer: (String) -> Unit) {
     var writing by remember(question.id) { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(question.question, color = Ink, style = MaterialTheme.typography.bodyMedium)
@@ -5617,8 +6004,10 @@ private fun CodexQuestionBody(question: CodexQuestion, answered: String?, pendin
         } else if (pending != null) {
             Text(pending, color = Muted, style = MaterialTheme.typography.bodySmall)
         } else {
+            if (draftMode && selected != null) Text("已选择：$selected", color = Accent, style = MaterialTheme.typography.bodySmall)
             question.options.forEach { option ->
-                OutlinedButton({ answer(option) }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp)) {
+                OutlinedButton({ answer(option) }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, if (selected == option) Accent else Divider)) {
                     Text(option, Modifier.fillMaxWidth(), color = Ink, style = MaterialTheme.typography.bodyMedium)
                 }
             }
@@ -5636,7 +6025,7 @@ private fun CodexQuestionBody(question: CodexQuestion, answered: String?, pendin
                     OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(), placeholder = { Text("你的回答") })
                 }
             },
-            confirmButton = { TextButton({ writing = false; answer(text.trim()) }, enabled = text.isNotBlank()) { Text("发送") } },
+            confirmButton = { TextButton({ writing = false; answer(text.trim()) }, enabled = text.isNotBlank()) { Text(if (draftMode) "确定" else "发送") } },
             dismissButton = { TextButton({ writing = false }) { Text("取消") } },
         )
     }
@@ -5644,9 +6033,13 @@ private fun CodexQuestionBody(question: CodexQuestion, answered: String?, pendin
 
 /** Codex has just asked something: its options, offered at once over the conversation. */
 @Composable
-private fun CodexQuestionDialog(prompt: CodexQuestionPrompt, answers: Map<String, String>, pending: Map<String, String>, answer: (CodexQuestion, String) -> Unit, dismiss: () -> Unit) {
+private fun CodexQuestionDialog(prompt: CodexQuestionPrompt, answers: Map<String, String>, pending: Map<String, String>,
+    drafts: Map<String, String>, answer: (CodexQuestion, String) -> Unit, draft: (CodexQuestion, String) -> Unit,
+    submit: (List<CodexQuestion>) -> Unit, dismiss: () -> Unit) {
     // An answer on its way counts: the dialog closes at once, the card in the chat shows how sending goes.
-    val open = prompt.questions.filter { !answers.containsKey(it.id) && !pending.containsKey(it.id) }
+    val open = codexQuestionGroups(prompt.questions).filter { group ->
+        group.any { !answers.containsKey(it.id) && !pending.containsKey(it.id) }
+    }.flatten()
     if (open.isEmpty()) { LaunchedEffect(prompt) { dismiss() }; return }
     AlertDialog(
         onDismissRequest = dismiss,
@@ -5655,7 +6048,7 @@ private fun CodexQuestionDialog(prompt: CodexQuestionPrompt, answers: Map<String
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text("Codex 需要你回答。可以现在填写，也可以稍后从对话里的“回答”按钮打开；稍后不会清除待回答提示。", color = Muted, style = MaterialTheme.typography.bodySmall)
-                open.forEach { question -> CodexQuestionBody(question, null, pending[question.id]) { answer(question, it) } }
+                CodexQuestionGroups(open, answers, pending, drafts, answer, draft, submit)
             }
         },
         confirmButton = { TextButton(dismiss) { Text("稍后") } },
@@ -5668,7 +6061,7 @@ private val LocalAgentBackend = androidx.compose.runtime.staticCompositionLocalO
 private val LocalAgentName = androidx.compose.runtime.staticCompositionLocalOf { "Codex" }
 
 /** Links in the conversation on screen that point at computer files, relative to its folder. */
-private class ComputerFileSource(val cwd: String, val vm: BridgeViewModel)
+private class ComputerFileSource(val threadId: String?, val cwd: String, val vm: BridgeViewModel)
 private val LocalComputerFiles = androidx.compose.runtime.staticCompositionLocalOf<ComputerFileSource?> { null }
 
 /**
@@ -5685,7 +6078,7 @@ internal fun ComputerFileDialog(vm: BridgeViewModel) {
         onDismissRequest = vm::dismissComputerFile,
         // A stray tap outside must not throw away a long download (a video).
         properties = DialogProperties(dismissOnClickOutside = !loading),
-        title = { Text(if (load.error != null) "没能打开" else if (load.confirmed) "正在从电脑取回" else "打开电脑上的文件？") },
+        title = { Text(if (load.error != null) "没能打开" else if (load.confirmed) "正在从电脑取回" else if (load.legacyFile != null) "找到以前取回的文件" else "打开电脑上的文件？") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(name, fontWeight = FontWeight.SemiBold)
@@ -5697,14 +6090,22 @@ internal fun ComputerFileDialog(vm: BridgeViewModel) {
                         else LinearProgressIndicator(Modifier.fillMaxWidth())
                         Text(if (load.total > 0) "${imageSizeLabel(load.received)} / ${imageSizeLabel(load.total)}" + (if (load.bytesPerSecond > 0) " · ${imageSizeLabel(load.bytesPerSecond)}/s" else "") else "连接中…", color = Muted, style = MaterialTheme.typography.labelSmall)
                     }
+                    load.legacyFile != null -> Text("旧版本没有记录文件来自哪台电脑。确认是当前电脑的文件后，可以直接打开本机副本；以后会自动打开。", color = Muted, style = MaterialTheme.typography.bodySmall)
                     else -> Text("文件会从电脑取回到手机，在 khLink 里打开；也可以保存到手机或用其他应用打开。", color = Muted, style = MaterialTheme.typography.bodySmall)
                 }
             }
         },
         confirmButton = {
-            if (!load.confirmed || load.error != null) TextButton({ vm.openComputerFile(load.path) }) { Text(if (load.error != null) "重试" else "下载并打开") }
+            if (load.legacyFile != null && !load.confirmed && load.error == null) TextButton({ vm.openLegacyComputerFile(load) }) { Text("打开本机副本") }
+            else if (!load.confirmed || load.error != null) TextButton({ vm.openComputerFile(load.path, load.threadId, load.force) }) { Text(if (load.error != null) "重试" else "下载并打开") }
         },
-        dismissButton = { TextButton(vm::dismissComputerFile) { Text(if (load.confirmed && load.error == null) "取消" else "关闭") } },
+        dismissButton = { Row {
+            if (load.legacyFile != null && !load.confirmed && load.error == null) TextButton({ vm.openComputerFile(load.path, load.threadId, force = true) }) { Text("重新取回") }
+            if (loading) {
+                TextButton(vm::dismissComputerFile) { Text("后台取回") }
+                TextButton(vm::cancelComputerFile) { Text("取消取回") }
+            } else TextButton(vm::dismissComputerFile) { Text("关闭") }
+        } },
     )
 }
 
@@ -6504,9 +6905,9 @@ private fun AgentVisibilityDialog(visible: Set<String>, order: List<String>, sta
 }
 
 @Composable
-private fun AgentClosedNote(id: String) {
+private fun AgentClosedNote(id: String, hermesLocal: Boolean = false) {
     Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), color = SurfaceAlt) {
-        Text(if (id == "hermes") "这台电脑上的 Hermes 没有响应（WSL 未启动或 hermes-gateway 没运行）。可查看已同步的历史，恢复后状态会自动更新。" else "电脑上的 ${homeTabLabel(id, 2)} 未开启。可查看已同步的历史，打开后状态会自动恢复。", Modifier.padding(12.dp), color = Muted, style = MaterialTheme.typography.bodySmall)
+        Text(if (id == "hermes") "这台电脑上的 Hermes 没有响应（${if (hermesLocal) "hermes 没装好或运行出错" else "WSL 未启动或 hermes-gateway 没运行"}）。可查看已同步的历史，恢复后状态会自动更新。" else "电脑上的 ${homeTabLabel(id, 2)} 未开启。可查看已同步的历史，打开后状态会自动恢复。", Modifier.padding(12.dp), color = Muted, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -6613,6 +7014,12 @@ private fun ChatPeerAvatar(size: Int = 40) {
 /** An agent's logo as a rounded tile (Codex, Claude Code, Pi, Antigravity). */
 @Composable
 private fun AgentLogo(backend: String, size: androidx.compose.ui.unit.Dp, dimmed: Boolean = false, dimAlpha: Float = 0.45f) {
+    if (StudioLayout && backendTab(backend) == "claude") {
+        Box(Modifier.size(size).background(P.surfaceAlt, RoundedCornerShape(size * 0.22f)), contentAlignment = Alignment.Center) {
+            Icon(Icons.Outlined.Code, "Claude", Modifier.size(size * 0.65f), tint = Ink.copy(alpha = if (dimmed) dimAlpha else 1f))
+        }
+        return
+    }
     val (image, name) = when (backendTab(backend)) {
         "claude" -> R.drawable.agent_claude to "Claude"
         "pi" -> R.drawable.agent_pi to "Pi"
@@ -6665,48 +7072,59 @@ private fun ChatSelectionBar(count: Int, action: String, cancel: () -> Unit, act
     }
 }
 
-/** A plain icon per agent for the bottom bar. */
+/** Chinese labels are kept short enough to fit even when every agent is visible. */
+internal fun chatAgentTabLabel(id: String): String = when (id) {
+    "codex" -> "代码"
+    "claude" -> "克劳德"
+    "pi" -> "派"
+    "antigravity" -> "反重力"
+    "dsh" -> "深度求索"
+    "hermes" -> "赫尔墨斯"
+    "me" -> "我"
+    else -> homeTabLabel(id, 4)
+}
 
-private val ChatTabIconSize = 25.dp
+private val ChatTabIconSize = 23.dp
 
 /** Bottom navigation: one entry per agent, plus "我" for the account. */
 @Composable
-private fun ChatBottomTabs(selected: String, tabs: List<String>, states: Map<String, HomeAgentState>, threads: List<ThreadSummary>, liveStatuses: Map<String, String>, choose: (String) -> Unit, settings: () -> Unit, openMe: () -> Unit) {
+private fun ChatBottomTabs(selected: String, tabs: List<String>, states: Map<String, HomeAgentState>, threads: List<ThreadSummary>, liveStatuses: Map<String, String>, choose: (String) -> Unit, openMe: () -> Unit) {
     val haptics = rememberHaptics()
     Column(Modifier.fillMaxWidth().background(P.surfaceAlt).navigationBarsPadding()) {
         HorizontalDivider(color = Divider)
-        // The bottom bar keeps navigation-bar insets outside this compact
-        // 48dp content row. Icons only, one size, each centered in an equal
-        // slot, so they sit on one line; the name is read out, not shown.
-        // A closed agent is dimmed, so state changes never change the height.
-        Row(Modifier.fillMaxWidth().height(48.dp)) {
-            (tabs + "settings" + "me").forEach { id ->
-                if (id == "settings") {
-                    Box(
-                        Modifier.weight(1f).fillMaxHeight().clickable { haptics.tick(); settings() },
-                        contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.Outlined.Settings, "选择显示的 Agent", Modifier.size(ChatTabIconSize), tint = Muted) }
-                    return@forEach
-                }
+        // Equal-width tabs retain their height when an agent goes offline.
+        Row(Modifier.fillMaxWidth().height(60.dp)) {
+            (tabs + "me").forEach { id ->
                 val active = id == selected
                 val state = states[id] ?: HomeAgentState.Unknown
                 val unavailable = id != "me" && state in setOf(HomeAgentState.Closed, HomeAgentState.Offline)
-                val tint = if (unavailable) Muted else if (active) Accent else Ink
-                val scale by animateFloatAsState(if (active) 1f else 0.9f, KhMotion.pop(), label = "chat-tab-logo")
-                Box(
-                    Modifier.weight(1f).fillMaxHeight().clickable {
+                val tint = if (unavailable) Muted.copy(alpha = 0.6f) else if (active) Ink else Muted
+                val icon = when (id) {
+                    "codex" -> Icons.Outlined.Code
+                    "claude" -> Icons.Outlined.Forum
+                    "pi" -> Icons.Outlined.Calculate
+                    "antigravity" -> Icons.Outlined.RocketLaunch
+                    "dsh" -> Icons.Outlined.Psychology
+                    "hermes" -> Icons.Outlined.Explore
+                    else -> Icons.Outlined.Person
+                }
+                Column(
+                    Modifier.weight(1f).fillMaxHeight().semantics(mergeDescendants = true) {
+                        contentDescription = if (id == "me") "我" else homeTabLabel(id, 3) + (if (active) "，当前" else "") + (if (unavailable) "，未开启" else "")
+                    }.clickable(role = Role.Tab) {
                         haptics.tick()
                         if (id == "me") openMe() else if (!active) choose(id)
                     },
-                    contentAlignment = Alignment.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
                 ) {
-                    Box(Modifier.semantics(mergeDescendants = true) { contentDescription = if (id == "me") "我" else homeTabLabel(id, 3) + if (active) "，当前" else "" }) {
-                        // The agents by their logos (2026-11-01): in color when open,
-                        // gray when not, fainter still when it is closed on the computer.
-                        if (id == "me") Icon(if (active) Icons.Filled.Person else Icons.Outlined.Person, null, Modifier.size(ChatTabIconSize), tint = tint)
-                        else Box(Modifier.graphicsLayer { scaleX = scale; scaleY = scale }) { AgentLogo(id, 24.dp, dimmed = !active || unavailable, dimAlpha = if (unavailable) 0.3f else 0.6f) }
-                        if (id != "me") ChatBadge(attentionCount(threads, liveStatuses, id), Modifier.align(Alignment.TopEnd).offset(x = 10.dp, y = (-6).dp))
+                    Box {
+                        Icon(icon, null, Modifier.size(ChatTabIconSize), tint = tint)
+                        if (id != "me") ChatBadge(attentionCount(threads, liveStatuses, id), Modifier.align(Alignment.TopEnd).offset(x = 8.dp, y = (-5).dp))
                     }
+                    Spacer(Modifier.height(3.dp))
+                    Text(chatAgentTabLabel(id), color = tint, fontSize = 10.sp, lineHeight = 12.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = if (active) FontWeight.Medium else FontWeight.Normal)
                 }
             }
         }
@@ -6796,6 +7214,8 @@ internal val LocalThemePreview = staticCompositionLocalOf { false }
 @Composable
 private fun BackgroundRunNote() {
     if (LocalThemePreview.current) return
+    // The demo build has no computer to keep a connection to.
+    if (BuildConfig.DEMO) return
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("background-note", android.content.Context.MODE_PRIVATE) }
     val power = remember { context.getSystemService(android.os.PowerManager::class.java) }
@@ -6825,19 +7245,6 @@ private fun BackgroundRunNote() {
                         context.startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     }.onFailure { runCatching { context.startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
                 }) { Text("允许后台运行") }
-            }
-        }
-    }
-}
-
-// Antigravity: messages from the phone are put into its window on the computer.
-@Composable
-private fun AntigravityNote() {
-    Surface(Modifier.fillMaxWidth().padding(bottom = 8.dp), color = P.surfaceHigh, shape = RoundedCornerShape(12.dp), border = BorderStroke(0.5.dp, Divider)) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("反重力", fontWeight = FontWeight.SemiBold, color = Ink, style = MaterialTheme.typography.bodyMedium)
-                Text("电脑保持反重力打开，即可在这里同步对话、发送文字和停止任务。新建会话、模型设置和文件附件请在电脑端操作。", color = Muted, style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -7075,7 +7482,10 @@ private fun DshAnswerDialog(pending: DshPending?, loading: Boolean, close: () ->
 }
 
 @Composable
-private fun DshSettingsDialog(current: ThreadSettings, catalog: DshCatalog?, close: () -> Unit, title: String = "DeepSeek Harness 设置", loading: String = "正在读取 DSH 模型…", save: (String, String, String) -> Unit) {
+private fun DshSettingsDialog(
+    current: ThreadSettings, catalog: DshCatalog?, close: () -> Unit, title: String = "DeepSeek Harness 设置", loading: String = "正在读取 DSH 模型…",
+    riskyPermission: String = "danger-full-access", note: String? = null, save: (String, String, String) -> Unit,
+) {
     var model by remember(current.model, catalog) {
         mutableStateOf(current.model?.takeIf { catalog?.model(it) != null } ?: catalog?.defaultKey ?: catalog?.models?.firstOrNull()?.key ?: "")
     }
@@ -7120,7 +7530,7 @@ private fun DshSettingsDialog(current: ThreadSettings, catalog: DshCatalog?, clo
             }
             if (permissionOptions.isNotEmpty()) SheetSection("权限模式") {
                 SheetOptionList(
-                    permissionOptions.map { SheetOption(it.value, dshPermissionLabel(it), dshPermissionDetail(it), risky = it.value == "danger-full-access") },
+                    permissionOptions.map { SheetOption(it.value, dshPermissionLabel(it), dshPermissionDetail(it), risky = it.value == riskyPermission) },
                     permission,
                 ) { permission = it }
             }
@@ -7130,11 +7540,18 @@ private fun DshSettingsDialog(current: ThreadSettings, catalog: DshCatalog?, clo
                 }
             }
             SheetNote(
-                if (permissionOptions.isNotEmpty()) "权限切换立即生效，正在执行的操作由 DSH 按新权限继续或拦截；模型和强度下一轮生效。"
+                note ?: if (permissionOptions.isNotEmpty()) "权限切换立即生效，正在执行的操作由 DSH 按新权限继续或拦截；模型和强度下一轮生效。"
                 else "模型和强度下一轮生效；正在运行的这一轮不受影响。",
             )
         }
     }
+}
+
+/** "Gemini 3.8 Flash 高" from the connector's "antigravity/Gemini 3.8 Flash" and "High". */
+internal fun antigravityModelLabel(settings: ThreadSettings, fallback: String): String {
+    val model = settings.model?.removePrefix("antigravity/")?.takeIf { it.isNotBlank() } ?: return shortModelName(fallback)
+    val level = mapOf("Minimal" to "最低", "Low" to "低", "Medium" to "中", "High" to "高", "Max" to "最高")[settings.effort] ?: settings.effort.orEmpty()
+    return listOf(model, level).filter { it.isNotBlank() }.joinToString(" ")
 }
 
 private fun dshPermissionLabel(option: DshPermissionOption): String = when (option.value) {
@@ -7180,11 +7597,16 @@ private fun ClaudeSettingsDialog(current: ThreadSettings, claudeModels: List<Cla
             }, shownModel) {
                 model = it; if (effort.isNotBlank() && effort !in claudeEffortsFor(it, claudeModels)) effort = ""
             }
+            if (claudeModels.any { it.source == "desktop-session" }) SheetNote("“桌面会话”表示最近在电脑用过，实际可用性以 Claude 桌面端为准。")
         }
         val efforts = claudeEffortsFor(model, claudeModels)
+        val observedModel = claudeModels.firstOrNull { it.value == model }?.source == "desktop-session"
         SheetSection("思考强度") {
-            if (efforts.isEmpty()) SheetNote("这个模型不支持调节思考强度")
-            else SheetSegments(claudeEffortOptions(model, claudeModels).map { SheetOption(it.id, it.label) }, effort) { effort = it }
+            if (efforts.isEmpty()) SheetNote(if (observedModel) "暂未获取这个模型的思考强度选项" else "这个模型不支持调节思考强度")
+            else {
+                SheetSegments(claudeEffortOptions(model, claudeModels).map { SheetOption(it.id, it.label) }, effort) { effort = it }
+                if (observedModel) SheetNote("这里只列出近期桌面会话记录过的强度。")
+            }
         }
         // For a session the desktop runs, the connector picks the mode in the desktop's own mode menu.
         SheetSection("权限模式") {
@@ -7312,6 +7734,36 @@ private fun taskSettingsSummary(settings: ThreadSettings, caps: CapabilityState 
         else -> settings.serviceTier
     }
     return "$model · $effort · $speed"
+}
+
+@Composable
+private fun NewTaskModelChoice(value: String, options: List<SettingOption>, choose: (String) -> Unit) {
+    if (options.size <= 20) {
+        Choice("模型", value, options, choose)
+        return
+    }
+    var open by remember { mutableStateOf(false) }
+    Column {
+        Text("模型", style = MaterialTheme.typography.labelMedium)
+        OutlinedButton({ open = true }, Modifier.fillMaxWidth()) { Text(value, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+    }
+    if (open) {
+        var search by remember { mutableStateOf("") }
+        val matching = options.filter { search.isBlank() || it.label.contains(search.trim(), true) || it.id.contains(search.trim(), true) }
+        AlertDialog(onDismissRequest = { open = false }, title = { Text("选择模型") }, text = {
+            Column {
+                OutlinedTextField(search, { search = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("搜索模型或供应商") })
+                if (matching.isEmpty()) Text("没有匹配的模型", Modifier.padding(vertical = 12.dp))
+                LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                    items(matching, key = { it.id }) { row ->
+                        TextButton({ choose(row.id); open = false }, Modifier.fillMaxWidth()) {
+                            Text(row.label, Modifier.fillMaxWidth(), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }, confirmButton = { TextButton({ open = false }) { Text("关闭") } })
+    }
 }
 
 @Composable

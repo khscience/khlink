@@ -113,12 +113,31 @@ function Get-SessionIdentity {
   }
   return $null
 }
+# Right after a session opens, the composer can drop the first SetValue
+# entirely (seen on a long session, 2026-11-11: the composer stayed empty for
+# 2 s, and the next SetValue landed at once). So the text is read back for a
+# while and written again into a freshly found composer, at most 3 times. A
+# retry only ever writes into an empty composer or one holding the start of
+# this very message, never over a draft typed on the desktop meanwhile.
 function Set-ComposerText($value) {
-  $el = Get-Composer; if (-not $el) { return $false }
-  try { $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($value) } catch { return $false }
-  Start-Sleep -Milliseconds 300
-  $norm = { param($t) ($t -replace "`r", '' -replace '\s+', ' ').Trim() }
-  return ((& $norm (Get-ComposerText (Get-Composer))) -eq (& $norm $value))
+  $norm = { param($t) ([string]$t -replace "`r", '' -replace '\s+', ' ').Trim() }
+  $want = & $norm $value
+  for ($attempt = 0; $attempt -lt 3; $attempt++) {
+    $el = $null
+    for ($i = 0; $i -lt 10 -and -not $el; $i++) { $el = Get-Composer; if (-not $el) { Start-Sleep -Milliseconds 200 } }
+    if (-not $el) { return $false }
+    if ($attempt -gt 0 -and $want) {
+      $now = & $norm (Get-ComposerText $el)
+      if ($now -and -not $want.StartsWith($now)) { return $false }
+    }
+    try { $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($value) } catch { Start-Sleep -Milliseconds 300; continue }
+    for ($i = 0; $i -lt 6; $i++) {
+      Start-Sleep -Milliseconds 200
+      $c = Get-Composer
+      if ($c -and (& $norm (Get-ComposerText $c)) -eq $want) { return $true }
+    }
+  }
+  return $false
 }
 function Get-ComposerText($el) {
   try { return $el.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern).DocumentRange.GetText(-1) } catch { return '' }
@@ -173,6 +192,21 @@ if ($Mode -eq 'send') {
     $now = Get-SessionIdentity
     if ($now -and (& $norm $now) -eq $want) { $shown = $now } else { Start-Sleep -Milliseconds 250 }
   }
+  # The desktop can get into a state where links opened with Start-Process no
+  # longer move the page while the same link opened by Explorer still does
+  # (seen 2026-11-11, for every session, until a link came through Explorer).
+  # Send the link once more that way before falling back to the sidebar.
+  if (-not $shown -and $want) {
+    Trace-Navigation 'explorer-link'
+    try { Start-Process -FilePath 'explorer.exe' -ArgumentList "claude://claude.ai/epitaxy/$SessionId" } catch { }
+    # 4 s: the whole script must stay well inside the connector's 45 s limit.
+    for ($i = 0; $i -lt 16 -and -not $shown; $i++) {
+      Start-Sleep -Milliseconds 250
+      $now = Get-SessionIdentity
+      if ($now -and (& $norm $now) -eq $want) { $shown = $now }
+    }
+    if ($shown) { Trace-Navigation 'explorer-link-shown' }
+  }
   # Some desktop versions accept the deep link in their backend without
   # updating the visible page. A uniquely named sidebar row can repair that,
   # but title alone is not identity: verify the visible document's session ID.
@@ -205,7 +239,10 @@ if ($Mode -eq 'send') {
     }
   }
   if (-not $shown) { Finish $false 'session_not_shown' }
-  $composer = Get-Composer
+  # The session view may still be rebuilding its composer just after the
+  # header changed: wait for it instead of giving up on the first look.
+  $composer = $null
+  for ($i = 0; $i -lt 25 -and -not $composer; $i++) { $composer = Get-Composer; if (-not $composer) { Start-Sleep -Milliseconds 200 } }
   if (-not $composer) { Finish $false 'composer_not_found' }
 }
 

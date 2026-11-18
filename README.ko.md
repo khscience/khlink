@@ -10,7 +10,7 @@ PC에서 실행 중인 Codex, Claude Code 등 에이전트 세션을 그대로 A
 승인하고, 답하고, 새 지시를 보내세요. 자리를 비워도 일은 멈추지 않습니다.
 
 [![CI](https://github.com/khscience/khlink/actions/workflows/ci.yml/badge.svg)](https://github.com/khscience/khlink/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)](LICENSE)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-2563eb.svg)](LICENSE)
 ![Android](https://img.shields.io/badge/Android-7.0+-3ddc84?logo=android&logoColor=white)
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078d4)
 ![E2EE](https://img.shields.io/badge/종단%20간%20암호화-XChaCha20--Poly1305-111827)
@@ -27,12 +27,12 @@ PC에서 실행 중인 Codex, Claude Code 등 에이전트 세션을 그대로 A
 
 ---
 
-## 완전 무료, 완전 오픈 소스
+## 완전 무료, 소스 코드 공개
 
-휴대폰 앱, PC 측, 릴레이 서버의 소스 코드는 모두 공개되어 있습니다(MIT). 세 가지 연결 방식은 기능이 같고 모두 무료입니다.
+휴대폰 앱, PC 측, 릴레이 서버의 소스 코드는 모두 공개되어 있으며, 개인 사용은 무료이고 상업적 사용은 금지됩니다(아래 "라이선스" 참고). 세 가지 연결 방식은 기능이 같고 모두 무료입니다.
 
 - **QR 코드 직접 연결**: PC에 뜬 QR 코드를 휴대폰으로 스캔하면 바로 연결됩니다. 계정이 필요 없고 khLink 서버도 거치지 않습니다.
-- **내 서버에 배포**: 오픈 소스 릴레이를 내 서버에 배포하고 서버 비밀번호로 로그인합니다. 계정이 필요 없습니다.
+- **내 서버에 배포**: 소스 코드가 공개된 릴레이를 내 서버에 배포하고 서버 비밀번호로 로그인합니다. 계정이 필요 없습니다.
 - **공식 서버 사용**: khLink 계정으로 로그인하면 설치 후 바로 쓸 수 있습니다. 계정마다 매월 300 MB 무료 트래픽이 있고, khQuant VIP 회원은 무제한입니다. khLink는 회원권을 판매하지 않습니다.
 
 어떤 방식이든 내용은 종단 간 암호화되며, 릴레이 서버에는 암호문만 보입니다.
@@ -230,7 +230,7 @@ flowchart LR
 <details>
 <summary><b>khLink는 유료인가요?</b></summary>
 
-소프트웨어는 무료이고 소스 코드는 MIT 라이선스로 공개되어 있습니다. QR 직접 연결과 내 서버 배포는 무료입니다. 공식 서버도 무료로, 계정마다 매월 300 MB를 쓸 수 있고 khQuant VIP 회원은 무제한입니다. khLink는 회원권을 판매하지 않으며, 세 가지 방식의 기능은 같습니다.
+소프트웨어는 무료이고 소스 코드는 공개되어 있으며, 개인 및 비상업적 사용은 무료이고 상업적 사용은 금지됩니다. QR 직접 연결과 내 서버 배포는 무료입니다. 공식 서버도 무료로, 계정마다 매월 300 MB를 쓸 수 있고 khQuant VIP 회원은 무제한입니다. khLink는 회원권을 판매하지 않으며, 세 가지 방식의 기능은 같습니다.
 </details>
 
 <details>
@@ -320,7 +320,11 @@ cd desktop-adapter && cargo test
 
 ## 라이선스
 
-[MIT](LICENSE). `docs/kh-link-*.md`의 약관은 공식 서비스와 공식 설치 파일에만 적용됩니다.
+khLink는 2026-11-18부터 [PolyForm Noncommercial License 1.0.0](LICENSE)으로 제공됩니다. 개인 학습·연구 등 비상업적 용도로는 무료로 쓸 수 있으며, **모든 상업적 사용은 금지**됩니다. 상업용 라이선스는 작성자에게 문의하세요. 비상업 라이선스는 엄밀한 의미의 오픈 소스가 아니므로 "소스 코드 공개"라고 부릅니다.
+
+이 프로젝트는 Linco Talk의 [linco-bridge](https://github.com/lincotalk/linco-bridge)(MIT)를 바탕으로 시작했습니다. 업스트림에서 온 코드는 계속 MIT이며 [LICENSE-UPSTREAM-MIT](LICENSE-UPSTREAM-MIT)를 참고하세요. 2026-11-18 이전에 배포한 버전은 당시의 MIT 라이선스를 따릅니다.
+
+`docs/kh-link-*.md`의 약관은 공식 서비스와 공식 설치 파일에만 적용됩니다.
 
 ## 감사의 말
 

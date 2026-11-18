@@ -28,6 +28,15 @@ class LightDetailChunksTest {
         assertEquals("nonce", a.nonce)
     }
 
+    @Test fun reassemblesNegotiatedLargeParts() {
+        val first = "A".repeat(REQUESTED_LIGHT_DETAIL_PART_CHARS)
+        val a = LightDetailAssembler("row")
+        a.add(part(0, first, false, total = first.length + 4))
+        a.add(part(first.length, "BBBB", true, total = first.length + 4))
+        assertTrue(a.complete)
+        assertEquals(first + "BBBB", a.ciphertext)
+    }
+
     @Test fun rejectsGapsMixedSnapshotsTruncationAndOversizedRows() {
         fun fails(next: LightDetailPart) {
             val a = LightDetailAssembler("row", maxChars = 10)

@@ -287,6 +287,118 @@ test('queues a durable full-history backfill once for a large rollout', async ()
   }
 });
 
+test('a completed replay resumes at its verified boundary after a rollout grows', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fengzhu-history-checkpoint-'));
+  const threadId = 'abcdef12-9012-1234-1234-123456789abc';
+  const file = path.join(root, `rollout-${threadId}.jsonl`);
+  const line = (at, text) => JSON.stringify({ timestamp: at, type: 'event_msg', payload: { type: 'user_message', message: text } }) + '\n';
+  fs.writeFileSync(file, line('2026-11-09T01:00:00Z', '第一条'));
+  try {
+    const c = Object.create(Connector.prototype);
+    Object.assign(c, { rolloutFilesByThread: new Map([[threadId, file]]), rolloutOffsets: new Map(),
+      historyBackfills: new Map(), historyBackfillPromises: new Map(), stopping: false,
+      saveHistoryDigests() {}, emit() {} });
+    const calls = [];
+    c.syncDesktopRollout = async (_id, target, options) => {
+      if (!options) return true;
+      calls.push(options);
+      c.rolloutOffsets.set(target, fs.statSync(target).size);
+      return true;
+    };
+    assert.equal(c.requestHistoryBackfill(threadId).queued, true);
+    await c.historyBackfillPromises.get(threadId);
+    const firstOffset = fs.statSync(file).size;
+    assert.equal(c.historyBackfills.get(threadId).checkpoint.offset, firstOffset);
+    fs.appendFileSync(file, line('2026-11-09T01:01:00Z', '第二条'));
+    assert.equal(c.requestHistoryBackfill(threadId).queued, true);
+    await c.historyBackfillPromises.get(threadId);
+    assert.equal(calls.at(-1).backfillStage, 'incremental');
+    assert.equal(calls.at(-1).startOffset, firstOffset);
+    assert.equal(c.historyBackfills.get(threadId).checkpoint.offset, fs.statSync(file).size);
+    assert.equal(c.requestHistoryBackfill(threadId).already, true);
+
+    // A replaced file must not reuse the old checkpoint, even if it grew.
+    fs.writeFileSync(file, line('2026-11-09T01:02:00Z', '替换后的不同内容'.repeat(20)));
+    assert.equal(c.requestHistoryBackfill(threadId).queued, true);
+    await c.historyBackfillPromises.get(threadId);
+    assert.equal(calls.at(-1).backfillStage, 'tail');
+    assert.equal(calls.at(-1).startOffset, 0);
+
+    // Truncation must not be accepted as a previously completed replay.
+    fs.writeFileSync(file, '{}\n');
+    assert.equal(c.requestHistoryBackfill(threadId).queued, true);
+    await c.historyBackfillPromises.get(threadId);
+    assert.equal(calls.at(-1).startOffset, 0);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an incomplete incremental record keeps the verified checkpoint retryable', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fengzhu-history-checkpoint-partial-'));
+  const threadId = 'abcdef12-9012-1234-1234-123456789abc';
+  const file = path.join(root, `rollout-${threadId}.jsonl`);
+  fs.writeFileSync(file, '{}\n');
+  try {
+    const c = Object.create(Connector.prototype);
+    Object.assign(c, { rolloutFilesByThread: new Map([[threadId, file]]), rolloutOffsets: new Map(),
+      historyBackfills: new Map(), historyBackfillPromises: new Map(), stopping: false,
+      saveHistoryDigests() {}, emit() {} });
+    let partial = false; const starts = [];
+    c.syncDesktopRollout = async (_id, target, options) => {
+      if (!options) return true;
+      starts.push(options.startOffset);
+      if (partial) return { partial: true, offset: options.startOffset };
+      c.rolloutOffsets.set(target, fs.statSync(target).size); return true;
+    };
+    c.requestHistoryBackfill(threadId); await c.historyBackfillPromises.get(threadId);
+    const offset = c.historyBackfills.get(threadId).checkpoint.offset;
+    fs.appendFileSync(file, '{"partial":'); partial = true;
+    c.requestHistoryBackfill(threadId); await c.historyBackfillPromises.get(threadId);
+    assert.equal(c.historyBackfills.get(threadId).checkpoint.offset, offset);
+    fs.appendFileSync(file, 'true}\n'); partial = false;
+    c.requestHistoryBackfill(threadId); await c.historyBackfillPromises.get(threadId);
+    assert.deepEqual(starts.slice(-2), [offset, offset]);
+    assert.equal(c.historyBackfills.get(threadId).checkpoint.offset, fs.statSync(file).size);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a restarted connector uploads only appended rollout items after a verified full replay', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fengzhu-history-checkpoint-real-'));
+  const threadId = 'abcdef12-9012-1234-1234-123456789abc';
+  const file = path.join(root, `rollout-${threadId}.jsonl`);
+  const record = (id, seconds) => JSON.stringify({ type: 'event_msg', timestamp: new Date(Date.UTC(2026, 10, 9, 1, 0, 0) + seconds * 1000).toISOString(),
+    payload: { id, type: 'item_completed', item: { type: 'CommandExecution', command: ['echo', id], aggregated_output: id, exit_code: 0, status: 'completed' } } }) + '\n';
+  const oldIds = Array.from({ length: 1000 }, (_, index) => `old-${index}`);
+  fs.writeFileSync(file, oldIds.map((id, index) => record(id, index)).join(''));
+  try {
+    const uploaded = [];
+    const make = (backfills) => {
+      const c = Object.create(Connector.prototype);
+      Object.assign(c, {
+        rolloutFilesByThread: new Map([[threadId, file]]), rolloutOffsets: new Map(), rolloutPartialOffsets: new Map(),
+        hiddenRollouts: new Set(), historyBackfills: backfills, historyBackfillPromises: new Map(),
+        desktopMetadataAt: new Map([[threadId, Date.now()]]), desktopActiveThreads: new Set(),
+        followups: { matchStarted: () => null, matchStartedByLocalImagePaths: () => null },
+        historyItemFrame: async () => ({ nonce: 'synthetic', ciphertext: 'synthetic' }),
+        putHistoryItems: async (_thread, items) => { uploaded.push(...items.map(item => item.id)); },
+        saveHistoryDigests() {}, emit() {}, log() {}, publishRolloutStatus() {},
+        turnStatus: (_id, status) => status, releaseFollowupAttachments() {}, stopping: false,
+      });
+      return c;
+    };
+    const first = make(new Map());
+    first.requestHistoryBackfill(threadId); await first.historyBackfillPromises.get(threadId);
+    await first.rolloutSyncTails?.get(threadId);
+    assert.deepEqual(uploaded, oldIds);
+    assert.ok(first.historyBackfills.get(threadId).checkpoint);
+    fs.appendFileSync(file, record('new-1', 1001));
+    const restarted = make(new Map(first.historyBackfills));
+    uploaded.length = 0;
+    restarted.requestHistoryBackfill(threadId); await restarted.historyBackfillPromises.get(threadId);
+    await restarted.rolloutSyncTails?.get(threadId);
+    assert.deepEqual(uploaded, ['new-1']);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('history backfill starts with a bounded newest tail before full replay', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fengzhu-history-tail-first-'));
   const threadId = 'abcdef12-9012-1234-1234-123456789abc';
@@ -844,6 +956,36 @@ test('streaming status re-reads the current tail after a previous task_complete'
     });
     assert.equal(published.at(-1)?.[1], 'running');
     assert.equal(published.some(([, status]) => status === 'completed'), false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('live-tail polling uploads new complete records only and retries a partial record', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fengzhu-live-incremental-'));
+  const file = path.join(root, 'rollout.jsonl');
+  fs.writeFileSync(file, '{"old":true}\n');
+  try {
+    const c = Object.create(Connector.prototype);
+    c.rolloutOffsets = new Map(); c.rolloutPartialOffsets = new Map();
+    const reads = [];
+    c.performDesktopRolloutSync = async (_id, target, options) => {
+      const bytes = fs.readFileSync(target); const data = bytes.subarray(options.startOffset).toString();
+      reads.push({ offset: options.startOffset, data });
+      if (!data.endsWith('\n')) return { partial: true, offset: options.startOffset };
+      c.rolloutOffsets.set(target, bytes.length); return true;
+    };
+    let cursor = fs.statSync(file).size;
+    assert.equal(await c.syncRecentRolloutTailDuringBackfill('x', file, cursor), cursor);
+    assert.equal(reads.length, 0);
+    fs.appendFileSync(file, '{"new":');
+    cursor = await c.syncRecentRolloutTailDuringBackfill('x', file, cursor);
+    fs.appendFileSync(file, 'true}\n');
+    cursor = await c.syncRecentRolloutTailDuringBackfill('x', file, cursor);
+    assert.equal(reads.length, 2);
+    assert.equal(reads[0].offset, reads[1].offset);
+    assert.equal(reads[1].data, '{"new":true}\n');
+    assert.equal(cursor, fs.statSync(file).size);
+    assert.equal(await c.syncRecentRolloutTailDuringBackfill('x', file, cursor), cursor);
+    assert.equal(reads.length, 2);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -410,3 +410,53 @@ test('a deleted Antigravity conversation is archived on the relay once, even whe
   assert.equal(requests.length, 1, 'archived only once');
   fs.rmSync(home, { recursive: true, force: true });
 });
+
+test('Antigravity model and permission are read from its window only on request and switched there', async () => {
+  const { install } = require('../src/backends/antigravity-sync');
+  const self = {}; install({ prototype: self });
+  const id = '33333333-3333-3333-3333-333333333333';
+  const calls = []; const events = [];
+  const read = {
+    ok: true, reason: 'settings', model: 'Gemini 3.8 Flash High', permission: 'Auto',
+    models: [
+      { name: 'Gemini 3.8 Flash', available: true, levels: ['Low', 'Medium', 'High'], level: 'High' },
+      { name: 'Claude Sonnet 4.6 (Thinking)', available: true },
+      { name: 'Gemini 4 Carbon', available: false },
+    ],
+    permissions: [{ name: 'Request Review' }, { name: 'Default' }, { name: 'Auto', isDefault: true }, { name: 'Turbo' }],
+  };
+  Object.assign(self, {
+    antigravityThreads: new Map([[id, { lastIdx: 1 }]]),
+    saveAntigravityThreads() {}, log() {},
+    emit(type, threadId, payload) { events.push([type, payload]); },
+    execFileFn(_cmd, args, _opts, done) {
+      const mode = args[args.indexOf('-Mode') + 1];
+      const text = require('node:fs').readFileSync(args[args.indexOf('-TextFile') + 1], 'utf8');
+      calls.push(mode === 'set' ? `set ${text}` : mode);
+      if (mode === 'settings') return done(null, JSON.stringify(read));
+      const wanted = JSON.parse(text);
+      done(null, JSON.stringify({ ok: true, reason: 'set', model: `${wanted.model} ${wanted.level}`.trim(), permission: wanted.permission || 'Auto' }));
+    },
+  });
+  const cached = await self.antigravityCommand({ action: 'thread.settings.read', args: { threadId: id } });
+  assert.deepEqual(calls, [], 'opening a conversation does not drive the window');
+  assert.equal(cached.catalog, null);
+  const fresh = await self.antigravityCommand({ action: 'thread.settings.read', args: { threadId: id, refresh: true } });
+  assert.deepEqual(fresh.settings, { model: 'antigravity/Gemini 3.8 Flash', effort: 'High', permissionMode: 'Auto' });
+  assert.deepEqual([fresh.model, fresh.effort, fresh.permissionMode], ['antigravity/Gemini 3.8 Flash', 'High', 'Auto'], 'also at the top level, where the phone reads a result');
+  const models = fresh.catalog.groups[0].models;
+  assert.deepEqual(models.map((model) => model.id), ['Gemini 3.8 Flash', 'Claude Sonnet 4.6 (Thinking)'], 'unavailable models are left out');
+  assert.deepEqual(models[0].reasoning.efforts.map((effort) => effort.name), ['低', '中', '高']);
+  assert.equal(fresh.permissionCatalog.defaultPreset, 'Auto');
+  assert.deepEqual(fresh.permissionCatalog.options.map((option) => option.value), ['Request Review', 'Default', 'Auto', 'Turbo']);
+  const again = await self.antigravityCommand({ action: 'thread.settings.read', args: { threadId: id } });
+  assert.equal(again.settings.effort, 'High'); assert.ok(again.catalog);
+  assert.equal(calls.length, 1);
+
+  const saved = await self.antigravityCommand({ action: 'settings.set', args: { threadId: id, model: 'antigravity/Gemini 3.8 Flash', effort: 'Low', permissionMode: 'Turbo' } });
+  assert.equal(calls[1], 'set {"model":"Gemini 3.8 Flash","level":"Low","permission":"Turbo"}');
+  assert.deepEqual([saved.model, saved.effort, saved.permissionMode], ['antigravity/Gemini 3.8 Flash', 'Low', 'Turbo']);
+  assert.match(saved.reason, /Gemini 3\.8 Flash 低 · 全自动/);
+  assert.equal(events.at(-1)[0], 'thread.settings');
+  await assert.rejects(self.antigravityCommand({ action: 'settings.set', args: { threadId: id, permissionMode: 'yolo' } }), /没有这个权限模式/);
+});

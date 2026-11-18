@@ -4,7 +4,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 
 internal const val MAX_LIGHT_DETAIL_CHARS = 16 * 1024 * 1024
-private const val MAX_LIGHT_DETAIL_PART_CHARS = 256 * 1024
+// Keep a part small enough for slow mobile connections while reducing round trips.
+internal const val REQUESTED_LIGHT_DETAIL_PART_CHARS = 384 * 1024
+private const val MAX_LIGHT_DETAIL_PART_CHARS = REQUESTED_LIGHT_DETAIL_PART_CHARS
 
 internal data class LightDetailPart(
     val id: String,

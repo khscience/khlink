@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { counts, UsageAccumulator, ConversationUsageReader } = require('../src/conversation-usage');
+const { counts, piRequestOutputSpeed, UsageAccumulator, ConversationUsageReader } = require('../src/conversation-usage');
 const { Connector } = require('../src/connector');
 const { methods: piMethods } = require('../src/backends/pi-sync');
 
@@ -26,8 +26,9 @@ test('completed Codex footers bind the whole turn to its final answer and surviv
   [tokens(1, 1_000, 100), event(2, 'task_started', { turn_id: 'a' }), tokens(3, 1_100, 110),
     finalAnswer(4, 'comment', 'commentary'), tokens(5, 1_300, 130), finalAnswer(6, 'final-a')].forEach(row => acc.consume(row));
   assert.deepEqual(acc.snapshot().completedTurns, []);
-  acc.consume(event(7, 'task_complete', { turn_id: 'a' }));
+  acc.consume(event(7, 'task_complete', { turn_id: 'a', duration_ms: 4672, time_to_first_token_ms: 4458 }));
   const footer = acc.snapshot().completedTurns[0];
+  assert.equal(footer.durationMs, 4672); assert.equal(footer.firstTokenMs, 4458);
   assert.equal(footer.usage.total, 330); assert.equal(footer.finalMessageId, 'final-a');
   assert.equal(footer.finalMessageAt, Date.parse(timestamp(6)));
   acc.consume(event(8, 'task_started', { turn_id: 'b' })); acc.consume(tokens(9, 1_400, 140));
@@ -76,6 +77,19 @@ test('Claude final footers add all tool calls, deduplicate fragments and retain 
   assert.equal(acc.snapshot().turnActive, true); assert.deepEqual(acc.snapshot().completedTurns, [first]);
 });
 
+test('Claude internal compaction is not treated as a new user turn', () => {
+  const acc = new UsageAccumulator('claude');
+  const done = claude(2, 'last', 20);
+  done.message.content = [{ type: 'text', text: '完成' }];
+  [user(1, '请继续'), done].forEach(row => acc.consume(row));
+  const previous = acc.snapshot().completedTurns;
+  acc.consume({ ...user(3, 'internal summary'), isCompactSummary: true });
+  assert.equal(acc.snapshot().turnActive, false);
+  assert.deepEqual(acc.snapshot().completedTurns, previous);
+  acc.consume(user(4, '下一条消息'));
+  assert.equal(acc.snapshot().turnActive, true);
+});
+
 test('a missing Claude request marks only its own finished turn as partial', () => {
   const acc = new UsageAccumulator('claude');
   const text = row => ({ ...row, message: { ...row.message, content: [{ type: 'text', text: 'answer' }] } });
@@ -93,6 +107,60 @@ test('Pi final footers use stable native entry ids rather than mutable branch di
     timestamp: Date.parse(timestamp(2)), content: [{ type: 'text', text: 'OK' }], usage: { input: 100, output: 2, totalTokens: 102 }, stopReason: 'stop' } }].forEach(row => acc.consume(row));
   assert.equal(acc.snapshot().completedTurns[0].finalMessageId, 'native-entry');
   assert.equal(acc.snapshot().completedTurns[0].usage.total, 102);
+});
+
+function timedPiRequest(id, start, end, output, stopReason = 'stop') {
+  return { type: 'message', id, timestamp: timestamp(end), message: { role: 'assistant', api: 'openai-completions',
+    timestamp: Date.parse(timestamp(start)), usage: { input: 10, output, totalTokens: 10 + output },
+    content: [{ type: 'text', text: 'answer' }], stopReason } };
+}
+test('Pi request speed uses the provider output count and request window, not tool or whole-turn time', () => {
+  const acc = new UsageAccumulator('pi');
+  const first = timedPiRequest('first', 2, 12, 500, 'toolUse');
+  const final = timedPiRequest('final', 612, 632, 400);
+  [user(1), first, { ...user(600, [{ type: 'tool_result', content: 'ok' }]), type: 'message' }, final].forEach(r => acc.consume(r));
+  const snapshot = acc.snapshot();
+  assert.equal(snapshot.latestOutputSpeed.outputTokens, 400);
+  assert.equal(snapshot.latestOutputSpeed.durationMs, 20_000);
+  assert.equal(snapshot.latestOutputSpeed.completedAt, snapshot.usageUpdatedAt);
+  assert.equal(snapshot.latestOutputSpeed.outputTokens, snapshot.latest.output);
+  assert.equal(snapshot.latestOutputSpeed.outputTokens * 1000 / snapshot.latestOutputSpeed.durationMs, 20);
+  assert.equal(snapshot.completedTurns[0].finalOutputSpeed.messageId, 'final');
+  assert.equal(snapshot.completedTurns[0].finalOutputSpeed.turnId, 'turn-1');
+  assert.equal(snapshot.completedTurns[0].finalOutputSpeed.completedAt - snapshot.completedTurns[0].finalOutputSpeed.durationMs,
+    snapshot.completedTurns[0].finalMessageAt);
+});
+test('Pi speed refuses missing, unverified, failed and invalid samples', () => {
+  const good = timedPiRequest('r', 2, 12, 100);
+  const rows = [
+    { ...good, id: '' }, { ...good, type: 'other' },
+    { ...good, message: { ...good.message, api: 'custom-adapter' } },
+    { ...good, message: { ...good.message, stopReason: 'error' } },
+    { ...good, message: { ...good.message, stopReason: 'aborted' } },
+    { ...good, message: { ...good.message, timestamp: Date.parse(timestamp(12)) } },
+    { ...good, message: { ...good.message, timestamp: -1 } },
+    { ...good, message: { ...good.message, usage: null } },
+    timedPiRequest('zero', 2, 12, 0),
+  ];
+  for (const row of rows) assert.equal(piRequestOutputSpeed(row), null);
+  assert.equal(piRequestOutputSpeed(good).durationMs, 10_000);
+});
+test('a newer failed or unmeasurable Pi call clears the number; an old replay cannot replace it', () => {
+  const acc = new UsageAccumulator('pi');
+  const first = timedPiRequest('first', 2, 12, 100, 'toolUse');
+  const final = timedPiRequest('final', 20, 30, 200);
+  [user(1), first, final, first].forEach(row => acc.consume(row));
+  assert.equal(acc.snapshot().latestOutputSpeed.messageId, 'final');
+  acc.consume(user(31));
+  acc.consume(timedPiRequest('failed', 32, 35, 0, 'error'));
+  assert.equal(acc.snapshot().latestOutputSpeed, null);
+  assert.equal(acc.snapshot().completedTurns[0].finalOutputSpeed.messageId, 'final');
+});
+test('Codex output speed is unavailable without a model request timing boundary', () => {
+  const acc = new UsageAccumulator('codex');
+  [event(1, 'task_started'), tokens(2, 100, 20), finalAnswer(3, 'answer'), event(4, 'task_complete')].forEach(r => acc.consume(r));
+  assert.equal(acc.snapshot().latestOutputSpeed, null);
+  assert.equal(acc.snapshot().completedTurns[0].finalOutputSpeed, undefined);
 });
 
 test('history requests rewind a bounded Codex tail to the required turn boundary, then reuse the byte offset', async t => {
@@ -298,4 +366,32 @@ test('old Codex counter copies cannot regress the most recently recorded native 
   const acc = new UsageAccumulator('codex');
   [tokens(2, 200, 20), tokens(1, 100, 10)].forEach(row => acc.consume(row));
   assert.equal(acc.snapshot().totals.total, 220);
+});
+
+test('statistics requests return only scoped summary metadata, never the caller path', async t => {
+  const file = await fileFixture(t, [claude(1, 'a', 20)]);
+  const connector = Object.create(Connector.prototype);
+  connector.claudeThreads = new Map([['owned', { transcriptFile: file }]]);
+  connector.config = { deviceId: 'known-pc' }; connector.log = () => {};
+  const now = Date.now(); const periods = { todayFrom: now - 86_400_000, monthFrom: now - 2 * 86_400_000, requestKey: 'test-request' };
+  const result = await connector.command({ action: 'thread.usage.read', args: { threadId: 'owned', path: 'ignored-external-file', periods } }, 'phone-test');
+  assert.equal(result.status, 'ready'); assert.equal(result.requestKey, 'test-request'); assert.equal(result.connectorId, 'known-pc');
+  assert.equal(result.periods.all.total, 160); assert.equal(result.completedTurns, undefined); assert.equal(result.path, undefined);
+});
+
+test('a slow statistics scan returns its encrypted ephemeral result only to its requester', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const connector = Object.create(Connector.prototype);
+  connector.antigravityThreads = new Map([['slow-stat', {}]]); connector.config = { deviceId: 'pc' }; connector.log = () => {};
+  let finish; const scan = new Promise(resolve => { finish = resolve; });
+  connector.distributionUsageReader = { read: () => scan };
+  const events = []; connector.emit = (...args) => events.push(args);
+  const now = Date.now(); const periods = { todayFrom: now - 5000, monthFrom: now - 10000, requestKey: 'request-a' };
+  const result = connector.readConversationUsage('slow-stat', 'phone-one', 0, periods);
+  t.mock.timers.tick(3_000);
+  assert.equal((await result).status, 'scanning');
+  finish({ schemaVersion: 1, backend: 'antigravity', status: 'unavailable', reason: 'no data' });
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(events[0][0], 'file.result'); assert.equal(events[0][3], 'phone-one');
+  assert.equal(events[0][2].event, 'thread.usage.stats'); assert.equal(events[0][2].result.requestKey, 'request-a');
 });

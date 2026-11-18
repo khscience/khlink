@@ -51,13 +51,33 @@ function subtract(total, baseline) {
   return result;
 }
 
+// Pi's built-in providers create message.timestamp immediately before the
+// request; SessionManager timestamps the entry after message_end. The latter
+// may include local event/extension handling, so this is an approximate
+// end-to-end request rate, never a pure decode rate. Do not infer a time from
+// a user message, a tool event, text length, or an unknown provider adapter.
+const PI_TIMED_APIS = new Set(['openai-completions', 'openai-responses', 'openai-codex-responses', 'anthropic-messages']);
+function piRequestOutputSpeed(row, owner = null) {
+  const m = row?.message;
+  if (row?.type !== 'message' || m?.role !== 'assistant' || typeof row.id !== 'string' || !row.id.trim() || !PI_TIMED_APIS.has(m.api) ||
+      !['stop', 'toolUse', 'length'].includes(m.stopReason)) return null;
+  const start = number(m.timestamp), end = at(row.timestamp), usage = counts('pi', m.usage);
+  if (!start || start < 1_000_000_000_000 || !Number.isSafeInteger(end) || end <= start || !usage?.output) return null;
+  return { method: 'pi_request_elapsed_v1', outputTokens: usage.output, durationMs: end - start,
+    completedAt: end, turnId: owner, messageId: String(row.id) };
+}
+
 class UsageAccumulator {
-  constructor(backend, { complete = true, maxRequests = 100_000 } = {}) {
+  constructor(backend, { complete = true, maxRequests = 100_000, periods = null } = {}) {
     this.backend = backend; this.complete = complete; this.maxRequests = maxRequests;
     this.requests = new Map(); this.missing = new Map(); this.updatedAt = 0; this.usageUpdatedAt = 0;
     this.turnId = null; this.turnActive = false; this.turnStartedAt = 0; this.turnBaseline = null; this.latest = null; this.total = null;
-    this.model = null; this.limited = false; this.inherited = false;
+    this.model = null; this.limited = false; this.inherited = false; this.inheritanceKnown = complete;
     this.turns = new Map();
+    this.periods = periods;
+    this.periodTotals = { today: 0, month: 0 };
+    this.firstCountAt = 0; this.periodUncertainAt = 0;
+    this.latestOutputSpeed = null; this.speedObservedAt = 0;
   }
 
   startTurn(id, timestamp, baseline = null) {
@@ -73,7 +93,7 @@ class UsageAccumulator {
     this.updatedAt = Math.max(this.updatedAt, timestamp);
     if (this.backend === 'codex') {
       const p = row.payload || {};
-      if (row.type === 'session_meta') this.inherited ||= Boolean(p.forked_from_id || p.forkedFromId);
+      if (row.type === 'session_meta') { this.inheritanceKnown = true; this.inherited ||= Boolean(p.forked_from_id || p.forkedFromId); }
       if (row.type === 'turn_context') this.model = p.model || this.model;
       const descriptor = this.turns.get(this.turnId);
       if (row.type === 'response_item' && p.type === 'message' && p.role === 'assistant'
@@ -89,12 +109,31 @@ class UsageAccumulator {
         && descriptor && timestamp >= descriptor.startedAt && (!p.turn_id || p.turn_id === this.turnId)) {
         this.turnActive = false; descriptor.completedAt = Math.max(descriptor.completedAt, timestamp);
         descriptor.total = this.total;
+        if (p.type === 'task_complete' && p.turn_id === descriptor.turnId) {
+          const duration = number(p.duration_ms);
+          const first = number(p.time_to_first_token_ms);
+          if (duration > 0) {
+            descriptor.durationMs = duration;
+            if (first !== null && first <= duration) descriptor.firstTokenMs = first;
+          }
+        }
       }
       if (p.type !== 'token_count') return;
       const total = counts('codex', p.info?.total_token_usage);
       if (!total) return;
       if (timestamp < this.usageUpdatedAt) return;
-      // Each record is a cumulative snapshot, never another amount to add.
+      // The native snapshot is cumulative. Only its positive change belongs
+      // to this timestamp; never sum snapshots or estimate from message text.
+      if (this.periods) {
+        const previous = this.total;
+        const delta = previous ? subtract(total, previous) : this.complete && !this.inherited ? total : null;
+        if (!this.firstCountAt && timestamp) this.firstCountAt = timestamp;
+        if (!timestamp || (!delta && previous)) this.periodUncertainAt = Math.max(this.periodUncertainAt, timestamp || Number.MAX_SAFE_INTEGER);
+        if (delta && timestamp) {
+          if (timestamp >= this.periods.todayFrom) this.periodTotals.today += delta.total;
+          if (timestamp >= this.periods.monthFrom) this.periodTotals.month += delta.total;
+        }
+      }
       this.total = total; this.latest = counts('codex', p.info?.last_token_usage);
       if (descriptor) descriptor.total = total;
       // A later native cumulative snapshot covers earlier skipped image or
@@ -103,7 +142,7 @@ class UsageAccumulator {
       this.usageUpdatedAt = Math.max(this.usageUpdatedAt, timestamp);
       return;
     }
-    if (this.backend === 'claude' && (row.isSidechain || row.isMeta)) return;
+    if (this.backend === 'claude' && (row.isSidechain || row.isMeta || row.isCompactSummary === true)) return;
     const message = row.message;
     if (!message) return;
     if (message.role === 'user' || (this.backend === 'claude' && row.type === 'user')) {
@@ -136,8 +175,15 @@ class UsageAccumulator {
     if (visibleText && descriptor && timestamp >= descriptor.finalMessageAt) {
       descriptor.finalMessageAt = this.backend === 'pi' ? at(message.timestamp) || timestamp : timestamp;
       descriptor.finalMessageId = this.backend === 'claude' && row.uuid ? `${row.uuid}:${Math.max(0, lastText)}` : this.backend === 'pi' ? row.id : null;
+      if (this.backend === 'pi') descriptor.finalOutputSpeed = piRequestOutputSpeed(row, owner);
     }
     const stop = message.stop_reason || message.stopReason;
+    if (this.backend === 'pi' && timestamp > 0 && timestamp >= this.speedObservedAt) {
+      // A later unsupported/failed request clears the old number; it must not
+      // masquerade as that request's speed.
+      this.speedObservedAt = timestamp;
+      this.latestOutputSpeed = piRequestOutputSpeed(row, owner);
+    }
     if (stop && !['tool_use', 'toolUse', 'pause_turn'].includes(stop) && descriptor && timestamp >= descriptor.startedAt) {
       descriptor.completedAt = Math.max(descriptor.completedAt, timestamp);
       if (owner === this.turnId) this.turnActive = false;
@@ -152,12 +198,30 @@ class UsageAccumulator {
     const merged = known ? Object.fromEntries(FIELDS.map(key => [key,
       usage[key] == null ? known.usage[key] : known.usage[key] == null ? usage[key] : Math.max(usage[key], known.usage[key])])) : usage;
     merged.total = merged.input + merged.output;
-    this.requests.set(id, { usage: merged, turnId: owner });
+    const requestAt = known?.requestAt && timestamp ? Math.min(known.requestAt, timestamp) : known?.requestAt || timestamp;
+    this.requests.set(id, { usage: merged, turnId: owner, requestAt });
     if (timestamp >= this.usageUpdatedAt) {
       this.latest = merged;
       this.model = message.model ? String(message.model) : this.model;
     }
     this.usageUpdatedAt = Math.max(this.usageUpdatedAt, timestamp);
+  }
+
+  periodSnapshot(rows, total) {
+    const range = (name, from) => {
+      if (this.backend === 'codex') {
+        const missingBaseline = (!this.complete || this.inherited) && (!this.firstCountAt || this.firstCountAt >= from);
+        return { total: this.periodTotals[name], partial: Boolean(missingBaseline || this.limited || this.periodUncertainAt >= from) };
+      }
+      const missingTime = rows.some(row => !row.requestAt);
+      return { total: rows.filter(row => row.requestAt >= from).reduce((sum, row) => sum + row.usage.total, 0),
+        partial: Boolean(!this.complete || this.limited || this.missing.size || missingTime) };
+    };
+    return { todayFrom: this.periods.todayFrom, monthFrom: this.periods.monthFrom,
+      today: range('today', this.periods.todayFrom), month: range('month', this.periods.monthFrom),
+      // A fork's native cumulative snapshot may include the parent's history.
+      all: this.backend === 'codex' && (this.inherited || !this.inheritanceKnown) ? null : { total: total.total,
+        partial: Boolean(this.limited || this.missing.size || (this.backend !== 'codex' && !this.complete)) } };
   }
 
   snapshot(historyFrom = 0) {
@@ -174,11 +238,17 @@ class UsageAccumulator {
         : byTurn.has(row.turnId) ? add(byTurn.get(row.turnId)) : null;
       return { turnId: row.turnId, startedAt: row.startedAt, completedAt: row.completedAt,
         finalMessageAt: row.finalMessageAt, finalMessageId: row.finalMessageId, usage,
+        ...(row.durationMs ? { durationMs: row.durationMs } : {}),
+        ...(row.firstTokenMs != null ? { firstTokenMs: row.firstTokenMs } : {}),
+        ...(row.finalOutputSpeed ? { finalOutputSpeed: row.finalOutputSpeed } : {}),
         partial: this.backend !== 'codex' && (!this.complete || this.limited || incomplete.has(row.turnId)) };
     }).filter(row => row.usage).slice(-200);
     const covered = [...this.turns.values()].filter(row => this.backend !== 'codex' || row.baseline);
+    const periodStats = this.periods && total ? this.periodSnapshot(rows, total) : undefined;
     return { schemaVersion: 1, backend: this.backend, status: total ? 'ready' : 'unavailable',
+      ...(periodStats ? { periods: periodStats } : {}),
       totals: total, turn, latest: this.latest, turnId: this.turnId, turnActive: this.turnActive,
+      latestOutputSpeed: this.latestOutputSpeed,
       completedTurns, historyFromAt: this.complete ? 0 : covered[0]?.startedAt || this.updatedAt,
       model: this.model, updatedAt: this.updatedAt, usageUpdatedAt: this.usageUpdatedAt,
       partial: this.limited || this.missing.size > 0 || (this.backend !== 'codex' && !this.complete),
@@ -187,36 +257,59 @@ class UsageAccumulator {
 }
 
 class ConversationUsageReader {
-  constructor({ chunkBytes = 256 * 1024, tailBytes = 8 * 1024 * 1024, rowBytes = 512 * 1024, maxFiles = 24 } = {}) {
-    this.chunkBytes = chunkBytes; this.tailBytes = tailBytes; this.rowBytes = rowBytes; this.maxFiles = maxFiles;
+  constructor({ chunkBytes = 256 * 1024, tailBytes = 8 * 1024 * 1024, rowBytes = 512 * 1024, maxFiles = 24, maxHistoryBytes = Infinity } = {}) {
+    this.chunkBytes = chunkBytes; this.tailBytes = tailBytes; this.rowBytes = rowBytes; this.maxFiles = maxFiles; this.maxHistoryBytes = maxHistoryBytes;
     this.states = new Map(); this.inFlight = new Map();
     this.historyRequests = new Map();
   }
 
-  async read(backend, file, { historyFrom = 0 } = {}) {
+  async read(backend, file, { historyFrom = 0, periods = null } = {}) {
     if (!['codex', 'claude', 'pi'].includes(backend) || !file) return { schemaVersion: 1, backend, status: 'unavailable', reason: backend === 'antigravity' ? '反重力尚无可靠的 token 用量数据源' : '暂时找不到此对话的用量记录' };
-    const key = `${backend}:${file}`;
+    const windows = validPeriodStarts(periods) ? periods : null;
+    const key = `${backend}:${file}${windows ? `:${windows.todayFrom}:${windows.monthFrom}` : ''}`;
     if (Number.isSafeInteger(historyFrom) && historyFrom > 1_000_000_000_000)
       this.historyRequests.set(key, Math.min(this.historyRequests.get(key) || historyFrom, historyFrom));
     const running = this.inFlight.get(key);
     if (running) return running;
     // Register before the first asynchronous stat. Otherwise two first reads
     // can both scan and advance the same file offset.
-    const work = this.readFile(backend, file, key);
+    const work = this.readFile(backend, file, key, windows);
     this.inFlight.set(key, work);
     try { return await work; } finally { this.inFlight.delete(key); }
   }
 
-  async readFile(backend, file, key) {
+  async readFile(backend, file, key, periods = null) {
     const stat = await fs.stat(file);
     if (!stat.isFile()) throw new Error('用量来源不是对话文件');
     const identity = `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
     let state = this.states.get(key);
     if (!state || stat.size < state.offset || state.identity !== identity) {
-      const start = backend === 'codex' ? Math.max(0, stat.size - this.tailBytes) : 0;
+      // Per-agent statistics deliberately bound disk work for every backend.
+      // The ordinary per-conversation reader keeps its unlimited full scan.
+      const boundedStart = Number.isFinite(this.maxHistoryBytes) ? Math.max(0, stat.size - this.maxHistoryBytes) : 0;
+      const start = backend === 'codex' ? Math.max(boundedStart, stat.size - this.tailBytes) : boundedStart;
       state = { identity, start, offset: start, pending: Buffer.alloc(0), discard: start > 0,
-        accumulator: new UsageAccumulator(backend, { complete: start === 0 }) };
+        accumulator: new UsageAccumulator(backend, { complete: start === 0, periods }) };
       this.states.set(key, state);
+      // A tail may omit session_meta. Read only its bounded first line so a
+      // fork cannot be mistaken for an independent all-time total.
+      if (periods && backend === 'codex' && start > 0) {
+        const fd = await fs.open(file, 'r');
+        try {
+          const buf = Buffer.alloc(Math.min(this.rowBytes, stat.size));
+          const { bytesRead } = await fd.read(buf, 0, buf.length, 0);
+          const end = buf.indexOf(10, 0);
+          if (end >= 0 && end < bytesRead) {
+            try {
+              const row = JSON.parse(buf.subarray(0, end).toString('utf8'));
+              if (row.type === 'session_meta') {
+                state.accumulator.inheritanceKnown = true;
+                state.accumulator.inherited = Boolean(row.payload?.forked_from_id || row.payload?.forkedFromId);
+              }
+            } catch { /* no safe all-time baseline */ }
+          }
+        } finally { await fd.close(); }
+      }
     }
     // In-flight scans are never evicted. Only opened statistics panels read
     // files; large history is scanned once asynchronously, then by size growth.
@@ -228,11 +321,17 @@ class ConversationUsageReader {
       let result = await this.scan(file, state, stat.size);
       // Rewind only when the visible history needs an older turn boundary.
       // Subsequent polls still read appended bytes only, even on GB rollouts.
-      while (backend === 'codex' && state.start > 0 && this.historyRequests.has(key)
+      const earliest = Number.isFinite(this.maxHistoryBytes) ? Math.max(0, stat.size - this.maxHistoryBytes) : 0;
+      while (backend === 'codex' && state.start > earliest && this.historyRequests.has(key)
         && result.historyFromAt > this.historyRequests.get(key)) {
-        const start = Math.max(0, state.start - Math.max(this.tailBytes, stat.size - state.start));
+        const start = Math.max(earliest, state.start - Math.max(this.tailBytes, stat.size - state.start));
+        const inherited = state.accumulator.inherited, inheritanceKnown = state.accumulator.inheritanceKnown;
         state = { identity, start, offset: start, pending: Buffer.alloc(0), discard: start > 0,
-          accumulator: new UsageAccumulator(backend, { complete: start === 0 }) };
+          accumulator: new UsageAccumulator(backend, { complete: start === 0, periods }) };
+        if (start > 0 && inheritanceKnown) {
+          state.accumulator.inherited = inherited;
+          state.accumulator.inheritanceKnown = true;
+        }
         state.running = work;
         this.states.set(key, state);
         result = await this.scan(file, state, stat.size);
@@ -283,4 +382,11 @@ class ConversationUsageReader {
   }
 }
 
-module.exports = { ConversationUsageReader, UsageAccumulator, counts, subtract };
+function validPeriodStarts(value) {
+  const now = Date.now();
+  return value && Number.isSafeInteger(value.todayFrom) && Number.isSafeInteger(value.monthFrom)
+    && value.monthFrom > 1_000_000_000_000 && value.monthFrom <= value.todayFrom
+    && value.todayFrom <= now + 2 * 86_400_000 && value.todayFrom - value.monthFrom <= 32 * 86_400_000;
+}
+
+module.exports = { ConversationUsageReader, UsageAccumulator, counts, subtract, piRequestOutputSpeed, validPeriodStarts };

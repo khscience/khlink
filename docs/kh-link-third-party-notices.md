@@ -1,7 +1,7 @@
 # khLink 第三方软件与服务声明
 
-文档版本：`kh-link-legal-v7`
-生效日期：2026-11-07
+文档版本：`kh-link-legal-v8`
+生效日期：2026-11-08
 运营者：看海（个人开发者）
 适用产品：khLink Windows 客户端、Android 客户端及配套服务
 

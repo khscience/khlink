@@ -38,6 +38,8 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     val connection = repository.connection
     val threads = repository.threads
     val executionStatuses = repository.liveStatuses
+    val stoppingThreads = repository.stoppingThreads
+    val stopConfirmedThreads = repository.stopConfirmedThreads
     val codexQuestionStates = repository.codexQuestionStates
     val liveStatuses = combine(executionStatuses, codexQuestionStates, repository.threads) { statuses, questions, threads ->
         statuses + questions.filterValues { it.pending }.mapValues { (id, question) ->
@@ -47,6 +49,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     val agentOpenStates = repository.agentOpenStates
     val agentOpenStatesByConnector = repository.agentOpenStatesByConnector
     val agentInstalledByConnector = repository.agentInstalledByConnector
+    val computerSystemByConnector = repository.computerSystemByConnector
     private val _visibleAgents = MutableStateFlow(repository.visibleAgents())
     val visibleAgents: StateFlow<Set<String>> = _visibleAgents
     private val _agentOrder = MutableStateFlow(repository.visibleAgentOrder())
@@ -56,6 +59,10 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     val historyLoadState = repository.historyLoadState
     val approval = repository.approval
     val statusText = repository.statusText
+    val computerScreens = repository.computerScreens
+    fun setComputerKeepAwake(enabled: Boolean) {
+        runCatching { repository.setComputerKeepAwake(enabled) }.onFailure { _uiError.value = userFacingUiError(it, "无法修改电脑屏幕唤醒设置") }
+    }
     val phoneNetworkAvailable = repository.phoneNetworkAvailable
     val capabilities = repository.capabilities
     val claudeConsent = repository.claudeConsent
@@ -74,6 +81,12 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     val historySyncing = repository.historySyncing
     val threadSettings = repository.threadSettings
     val conversationUsage = repository.conversationUsage
+    val completionTimes = repository.completionTimes
+    fun preparePinnedCompletionSort(threads: List<ThreadSummary>) = repository.preparePinnedCompletionSort(threads)
+    fun cancelPinnedCompletionSort() = repository.cancelPinnedCompletionSort()
+    val agentUsage = repository.agentUsage
+    fun loadAgentUsage(backend: String) = repository.loadAgentUsage(backend)
+    fun dismissAgentUsage() = repository.dismissAgentUsage()
     val tokenDisplayUnit = repository.tokenDisplayUnit
     fun saveTokenDisplayUnit(unit: TokenDisplayUnit) = repository.saveTokenDisplayUnit(unit)
     val lightMode = repository.lightMode
@@ -84,6 +97,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     fun saveShowPcLoad(enabled: Boolean) = repository.saveShowPcLoad(enabled)
     val lightDetails = repository.lightDetails
     val lightFetching = repository.lightFetching
+    val lightProgress = repository.lightProgress
     private val lightFetchJobs = LightDetailFetchJobs()
     fun loadLightDetails(threadId: String) = viewModelScope.launch { runCatching { repository.loadLightDetails(threadId) } }
     fun fetchLightDetails(threadId: String, placeholders: List<HistoryItem>): Job {
@@ -313,14 +327,25 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun clearCreatedThreadId() = repository.clearCreatedThreadId()
     fun currentThreadId(): String? = repository.currentThreadId()
-    fun open(threadId: String) = viewModelScope.launch {
+    internal suspend fun preloadHistoryPreviews(keys: List<HistoryPreviewKey>) = repository.preloadHistoryPreviews(keys)
+    private var historyOpenJob: Job? = null
+    fun open(threadId: String) {
+        historyOpenJob?.cancel()
         repository.watchThread(threadId)
         repository.markThreadRead(threadId)
-        runCatching { repository.loadThread(threadId) }
-            // Opening during a reconnect is expected to be transient; the thread view keeps its inline retry state.
-            .onFailure { reportFailure(it, "加载失败", showError = false) }
+        historyOpenJob = viewModelScope.launch {
+            try {
+                repository.loadThread(threadId)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                reportFailure(error, "加载失败", showError = false)
+            }
+        }
     }
     fun closeTask() {
+        historyOpenJob?.cancel()
+        historyOpenJob = null
         repository.markActiveThreadRead()
         repository.watchThread(null)
     }
@@ -345,6 +370,19 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     }.onFailure { error(it.message ?: "调整方向失败") }.isSuccess
     val codexQuestion = repository.codexQuestion
     fun dismissCodexQuestion() = repository.dismissCodexQuestion()
+    private val _codexAnswerDrafts = MutableStateFlow<Map<String, Map<String, String>>>(emptyMap())
+    val codexAnswerDrafts: StateFlow<Map<String, Map<String, String>>> = _codexAnswerDrafts
+    fun setCodexAnswerDraft(threadId: String, questionId: String, value: String) {
+        _codexAnswerDrafts.value = _codexAnswerDrafts.value + (threadId to (_codexAnswerDrafts.value[threadId].orEmpty() + (questionId to value)))
+    }
+    fun answerCodexQuestions(thread: ThreadSummary, questions: List<CodexQuestion>): Boolean {
+        val drafts = _codexAnswerDrafts.value[thread.id].orEmpty()
+        val submitted = submitCodexQuestionAnswers(questions, drafts, repository.queuedInstructions.value[thread.id].orEmpty()) {
+            steer(thread.id, thread.title, it)
+        }
+        if (submitted) _codexAnswerDrafts.value = _codexAnswerDrafts.value + (thread.id to (drafts - questions.map { it.id }.toSet()))
+        return submitted
+    }
     /** Native questions always use send-now, including cards reopened after a
      * turn ends. The connector starts a new turn if the old one already ended. */
     fun answerCodexQuestion(thread: ThreadSummary, question: CodexQuestion, answer: String): Boolean =
@@ -394,7 +432,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
             .onFailure { error(it.message ?: "没能读取电脑上的选项") }
     }
     fun openOnDesktop(threadId: String) = runCatching { repository.command("claude.desktop.open", threadId, JSONObject().put("threadId", threadId)) }.onFailure { error(it.message ?: "没能在电脑上打开") }
-    fun stop(threadId: String) = runCatching { repository.command("turn.stop", threadId, JSONObject().put("threadId", threadId)) }.onFailure { error(it.message ?: "停止失败") }
+    fun stop(threadId: String) = runCatching { repository.stop(threadId) }.onFailure { error(it.message ?: "停止失败") }
     fun compact(threadId: String) = action("thread.compact", threadId)
     fun fork(threadId: String) = action("thread.fork", threadId)
     fun rollback(threadId: String) = action("thread.rollback", threadId)
@@ -438,6 +476,8 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
         runCatching { repository.switchSettings(threadId, JSONObject().put("threadId", threadId).put("title", title).put("settings", value)) }.onFailure { error(it.message ?: "设置失败") }
             .onSuccess { _threadModes.value = _threadModes.value + (threadId to permissionMode) }
     }
+    suspend fun newTaskModels(backend: String) = repository.newTaskModels(backend)
+
     suspend fun piModels(threadId: String): PiModelChoice = repository.piModels(threadId)
     suspend fun loadClaudeImage(threadId: String, ref: HistoryImageRef): HistoryImage = repository.loadClaudeImage(threadId, ref)
 
@@ -446,46 +486,118 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     private val _computerFile = MutableStateFlow<ComputerFileLoad?>(null)
     val computerFile: StateFlow<ComputerFileLoad?> = _computerFile
     private var computerFileJob: Job? = null
+    private var computerFileGeneration = 0L
+    internal val computerFileTransfers = repository.computerFileTransfers
+    internal fun computerFileTransferKey(path: String, threadId: String?): String? = repository.computerFileTransferKey(path, threadId)
+    private val requestedInlineVideos = LinkedHashSet<String>()
 
-    fun askComputerFile(path: String) { computerFileJob?.cancel(); _computerFile.value = ComputerFileLoad(path, confirmed = false) }
-
-    fun openComputerFile(path: String) {
-        computerFileJob?.cancel()
-        _computerFile.value = ComputerFileLoad(path, confirmed = true)
-        computerFileJob = viewModelScope.launch {
-            val startedAt = System.currentTimeMillis()
-            runCatching {
-                repository.fetchComputerFile(path) { received, total ->
-                    // Average speed so far, shown once there's a second's worth to go on.
-                    val elapsed = System.currentTimeMillis() - startedAt
-                    _computerFile.value = ComputerFileLoad(path, true, received, total, bytesPerSecond = if (elapsed >= 1_000) received * 1_000 / elapsed else 0)
-                }
-            }
-                .onSuccess { file ->
-                    _computerFile.value = null
-                    _computerFileView.value = ComputerFileView(path, file)
-                    refreshFetchedFiles()
-                }
-                .onFailure { failure ->
-                    if (failure !is kotlinx.coroutines.CancellationException) _computerFile.value = ComputerFileLoad(path, true, error = failure.message ?: "打开失败")
-                }
+    internal fun rememberInlineVideo(path: String, threadId: String?) {
+        val key = computerFileTransferKey(path, threadId) ?: return
+        synchronized(requestedInlineVideos) {
+            requestedInlineVideos.remove(key); requestedInlineVideos.add(key)
+            while (requestedInlineVideos.size > 100) requestedInlineVideos.remove(requestedInlineVideos.first())
         }
     }
 
-    fun dismissComputerFile() { computerFileJob?.cancel(); _computerFile.value = null }
+    internal fun wasInlineVideoRequested(path: String, threadId: String?): Boolean {
+        val key = computerFileTransferKey(path, threadId) ?: return false
+        return synchronized(requestedInlineVideos) { key in requestedInlineVideos }
+    }
 
-    // Inline markdown images/videos reuse the fetched-file cache so a message
-    // does not fetch the same computer file again on every recomposition.
-    private val inlineFiles = java.util.concurrent.ConcurrentHashMap<String, java.io.File>()
-    suspend fun loadInlineComputerFile(path: String, progress: (Long, Long) -> Unit = { _, _ -> }): java.io.File {
-        inlineFiles[path]?.takeIf { it.isFile }?.let { return it }
-        // Fetched once before (this run or an earlier one): no second transfer.
-        withContext(Dispatchers.IO) { repository.fetchedFiles() }.firstOrNull { it.path == path && it.file.isFile }?.let { inlineFiles[path] = it.file; return it.file }
-        val file = withContext(Dispatchers.IO) { repository.fetchComputerFile(path, progress) }
-        inlineFiles[path] = file
+    internal fun forgetInlineVideo(path: String, threadId: String?) {
+        val key = computerFileTransferKey(path, threadId) ?: return
+        synchronized(requestedInlineVideos) { requestedInlineVideos.remove(key) }
+    }
+
+    fun askComputerFile(path: String, threadId: String? = currentThreadId()) {
+        if (computerFileTransferKey(path, threadId)?.let { it in computerFileTransfers.value } == true) {
+            openComputerFile(path, threadId)
+            return
+        }
+        val generation = ++computerFileGeneration
+        computerFileJob?.cancel()
+        computerFileJob = viewModelScope.launch {
+            val cached = withContext(Dispatchers.IO) { repository.cachedComputerFile(path, threadId) }
+            if (generation != computerFileGeneration) return@launch
+            // A copy fetched before an agent edited the file is fetched again.
+            val current = cached?.let { repository.currentCachedComputerFile(path, threadId) }
+            if (generation != computerFileGeneration) return@launch
+            if (cached != null && current == null) {
+                openComputerFile(path, threadId, force = true)
+            } else if (current != null) {
+                _computerFile.value = null
+                _computerFileView.value = ComputerFileView(path, current, threadId)
+            } else {
+                val legacy = withContext(Dispatchers.IO) { repository.legacyComputerFile(path) }
+                if (generation != computerFileGeneration) return@launch
+                _computerFile.value = ComputerFileLoad(path, confirmed = false, threadId = threadId, legacyFile = legacy)
+            }
+        }
+    }
+
+    fun openComputerFile(path: String, threadId: String? = currentThreadId(), force: Boolean = false) {
+        val generation = ++computerFileGeneration
+        computerFileJob?.cancel()
+        _computerFile.value = ComputerFileLoad(path, confirmed = true, threadId = threadId, force = force)
+        computerFileJob = viewModelScope.launch {
+            var baseline = -1L
+            var startedAt = 0L
+            runCatching {
+                repository.fetchComputerFile(path, threadId, force) { received, total ->
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (baseline < 0) { baseline = received; startedAt = now }
+                    val elapsed = now - startedAt
+                    val newBytes = (received - baseline).coerceAtLeast(0)
+                    if (generation == computerFileGeneration)
+                        _computerFile.value = ComputerFileLoad(path, true, received, total, bytesPerSecond = if (elapsed >= 1_000) newBytes * 1_000 / elapsed else 0, threadId = threadId, force = force)
+                }
+            }.onSuccess { file ->
+                if (generation == computerFileGeneration) {
+                    _computerFile.value = null
+                    _computerFileView.value = ComputerFileView(path, file, threadId)
+                }
+                refreshFetchedFiles()
+            }.onFailure { failure ->
+                if (generation == computerFileGeneration)
+                    _computerFile.value = ComputerFileLoad(path, true, error = if (failure is kotlinx.coroutines.CancellationException) "取回已取消" else failure.message ?: "打开失败", threadId = threadId, force = force)
+            }
+        }
+    }
+
+    fun openLegacyComputerFile(load: ComputerFileLoad) {
+        val legacy = load.legacyFile ?: return
+        val generation = ++computerFileGeneration
+        computerFileJob?.cancel()
+        computerFileJob = viewModelScope.launch {
+            runCatching { repository.adoptLegacyComputerFile(load.path, legacy, load.threadId) }
+                .onSuccess { file ->
+                    if (generation == computerFileGeneration) { _computerFile.value = null; _computerFileView.value = ComputerFileView(load.path, file, load.threadId) }
+                    refreshFetchedFiles()
+                }
+                .onFailure { error -> if (generation == computerFileGeneration && error !is kotlinx.coroutines.CancellationException) _computerFile.value = load.copy(error = error.message ?: "打开本机副本失败") }
+        }
+    }
+
+    /** Hide the dialog; the repository continues the user's file transfer. */
+    fun dismissComputerFile() { ++computerFileGeneration; computerFileJob?.cancel(); _computerFile.value = null }
+
+    fun cancelComputerFile() {
+        _computerFile.value?.let { repository.cancelComputerFileTransfer(it.path, it.threadId) }
+        dismissComputerFile()
+    }
+
+    // Inline media follows the same account/computer-scoped cache as links.
+    suspend fun loadInlineComputerFile(path: String, threadId: String? = currentThreadId(), progress: (Long, Long) -> Unit = { _, _ -> }): java.io.File {
+        val file = withContext(Dispatchers.IO) { repository.fetchComputerFile(path, threadId, progress = progress) }
         refreshFetchedFiles()
         return file
     }
+
+    internal suspend fun cachedInlineComputerFile(path: String, threadId: String?): java.io.File? =
+        withContext(Dispatchers.IO) { repository.cachedComputerFile(path, threadId) }
+
+    internal suspend fun loadMarkdownImage(document: java.io.File, path: String, threadId: String?): java.io.File =
+        withContext(Dispatchers.IO) { repository.fetchMarkdownImage(document, path, threadId) }
 
     // A fetched computer file shown inside the app (Markdown, HTML, text …).
     private val _computerFileView = MutableStateFlow<ComputerFileView?>(null)
@@ -496,7 +608,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     private val _fetchedFiles = MutableStateFlow<List<FetchedFile>>(emptyList())
     val fetchedFiles: StateFlow<List<FetchedFile>> = _fetchedFiles
     fun refreshFetchedFiles() { viewModelScope.launch { _fetchedFiles.value = withContext(Dispatchers.IO) { repository.fetchedFiles() } } }
-    fun showFetchedFile(item: FetchedFile) { _computerFileView.value = ComputerFileView(item.path, item.file) }
+    fun showFetchedFile(item: FetchedFile) { _computerFileView.value = ComputerFileView(item.path, item.file, item.threadId) }
     fun deleteFetchedFile(item: FetchedFile) {
         viewModelScope.launch { withContext(Dispatchers.IO) { repository.deleteFetched(item.file) }; refreshFetchedFiles() }
     }
@@ -537,16 +649,17 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     suspend fun piProviders(): List<PiProvider> = repository.piProviders()
     suspend fun savePiProvider(provider: PiProvider, apiKey: String) = repository.savePiProvider(provider, apiKey)
     fun startPiWeb() { runCatching { repository.command("pi.start") }.onFailure { error(it.message ?: "启动失败") } }
-    fun loadSettings(threadId: String) = viewModelScope.launch {
-        runCatching { repository.loadThreadSettings(threadId) }
+    fun loadSettings(threadId: String, refresh: Boolean = false) = viewModelScope.launch {
+        runCatching { repository.loadThreadSettings(threadId, refresh) }
             .onFailure { reportFailure(it, "设置读取失败", showError = false) }
     }
     fun loadConversationUsage(threadId: String, historyFrom: Long = 0L) = repository.loadConversationUsage(threadId, historyFrom)
-    fun backendCapabilities() { runCatching { repository.command("backends.capabilities") } }
+    fun backendCapabilities(threadId: String? = null) { runCatching { repository.command("backends.capabilities", threadId) } }
     val claudeUsage = repository.claudeUsage
     val dshUsage = repository.dshUsage
     val dshCatalog = repository.dshCatalog
     val hermesCatalog = repository.hermesCatalog
+    val antigravityCatalog = repository.antigravityCatalog
     val dshPending = repository.dshPending
     val dshPendingLoading = repository.dshPendingLoading
     val pcLoad = repository.pcLoad

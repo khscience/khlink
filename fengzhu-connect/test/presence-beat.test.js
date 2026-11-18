@@ -6,7 +6,7 @@ function connectorWith(state) {
   const connector = Object.create(Connector.prototype);
   const sent = [];
   connector.presencePayload = (sentAt) => ({ deviceName: 'PC', connectorId: 'pc-1', sentAt, pcLoad: { cpu: state.cpu, at: sentAt },
-    agents: { claude: true }, activeThreads: state.active, threadOwners: state.owners });
+    agents: { claude: true }, activeThreads: state.active, threadOwners: state.owners, ...(state.screen ? { screen: state.screen } : {}) });
   connector.emit = (kind, _threadId, payload) => sent.push([kind, payload]);
   return { connector, sent };
 }
@@ -43,4 +43,16 @@ test('the signature ignores time, load and observation times but not statuses', 
   const base = { deviceName: 'PC', sentAt: 1, pcLoad: { cpu: 1 }, activeThreads: [{ threadId: 'a', status: 'desktop_running', updatedAt: 1 }] };
   assert.equal(presenceSignature(base), presenceSignature({ ...base, sentAt: 9, pcLoad: { cpu: 80 }, activeThreads: [{ threadId: 'a', status: 'desktop_running', updatedAt: 9 }] }));
   assert.notEqual(presenceSignature(base), presenceSignature({ ...base, activeThreads: [{ threadId: 'a', status: 'desktop_waiting', updatedAt: 1 }] }));
+});
+
+test('a lock or wake setting change immediately sends a full presence', () => {
+  const state = { cpu: 1, active: [], owners: [], screen: { supported: true, locked: false, keepAwake: false, wakeActive: false, lockId: null } };
+  const { connector, sent } = connectorWith(state);
+  assert.equal(connector.publishPresence({ sentAt: 1000 }), true);
+  assert.equal(connector.publishPresence({ sentAt: 2000 }), false);
+  state.screen = { ...state.screen, locked: true, lockId: 'lock-a' };
+  assert.equal(connector.publishPresence({ sentAt: 3000 }), true);
+  assert.deepEqual(sent[2][1].screen, state.screen);
+  state.screen = { ...state.screen, keepAwake: true, wakeActive: true };
+  assert.equal(connector.publishPresence({ sentAt: 4000 }), true);
 });

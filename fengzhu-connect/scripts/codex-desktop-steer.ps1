@@ -19,7 +19,8 @@ param(
   # The task's title, UTF-8 Base64 (a title may start with '-').
   [Parameter(Mandatory = $true)][string]$TitleB64,
   [Parameter(Mandatory = $true)][string]$TextFile,
-  [ValidateSet('steer', 'queue')][string]$Mode = 'steer'
+  [ValidateSet('steer', 'queue')][string]$Mode = 'steer',
+  [switch]$CheckReceipt
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -31,6 +32,14 @@ $Scope = [System.Windows.Automation.TreeScope]::Descendants
 function Out-Result($ok, $code, $delivery, $message) {
   [Console]::Out.WriteLine((@{ ok = $ok; code = $code; delivery = $delivery; message = $message } | ConvertTo-Json -Compress))
   exit 0
+}
+function Confirm-RequestPending {
+  if (-not $CheckReceipt) { return }
+  [Console]::Out.WriteLine('{"phase":"check_receipt"}')
+  [Console]::Out.Flush()
+  $response = [Console]::In.ReadLine()
+  if ($response -eq 'hold') { Out-Result $false 'already_handled' 'confirmed' 'The request is no longer pending' }
+  if ($response -ne 'submit') { Out-Result $false 'delivery_uncertain' 'uncertain' 'Could not verify the pending request' }
 }
 if ($ThreadId -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') { Out-Result $false 'invalid_thread_id' 'not_sent' 'A valid Codex task id is required' }
 $title = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($TitleB64)).Trim()
@@ -58,11 +67,6 @@ function Get-Composer($w) {
   $names = @($candidates | ForEach-Object { [string]$_.Current.Name })
   $index = Get-CodexComposerIndex $names
   if ($index -ge 0) { return $candidates[$index] }
-}
-function Get-Button($w, [string[]]$names) {
-  foreach ($e in $w.FindAll($Scope, (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)))) {
-    if ($names -contains $e.Current.Name -and -not $e.Current.IsOffscreen -and $e.Current.IsEnabled) { return $e }
-  }
 }
 function Get-EditorChildNames($editor) {
   $textType = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
@@ -104,17 +108,22 @@ function Get-RowSteer($w, [string]$firstLine) {
   if ($hits.Count -eq 1) { return $hits[0] }
 }
 
-# The running task's composer submit button when 后续消息 is set to 引导.
-function Get-ComposerSteer($w) {
+# Find a unique action on this composer's toolbar. The parent may also hold a
+# question card or queued rows, so only accept buttons at/below the editor.
+function Get-ComposerButton($w, [string[]]$names) {
   $editor = Get-Composer $w
   if (-not $editor) { return }
   $box = $editor.Current.BoundingRectangle
   if ($box.IsEmpty) { return }
+  $parent = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($editor)
+  if (-not $parent) { return }
+  $container = $parent.Current.BoundingRectangle
+  if ($container.IsEmpty) { return }
   $hits = @()
-  foreach ($e in $w.FindAll($Scope, (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)))) {
-    if ((Get-CodexSteerButtonNames) -notcontains $e.Current.Name -or $e.Current.IsOffscreen -or -not $e.Current.IsEnabled) { continue }
+  foreach ($e in $parent.FindAll($Scope, (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)))) {
+    if ($names -notcontains $e.Current.Name -or $e.Current.IsOffscreen -or -not $e.Current.IsEnabled) { continue }
     $r = $e.Current.BoundingRectangle
-    if (Test-CodexComposerSteerButton $r.X $r.Y $box.X $box.Y $box.Width) { $hits += $e }
+    if (-not $r.IsEmpty -and (Test-CodexComposerActionButton $r.X $r.Y $r.Width $r.Height $box.X $box.Y $box.Width $container.X $container.Y $container.Width $container.Height)) { $hits += $e }
   }
   if ($hits.Count -eq 1) { return $hits[0] }
 }
@@ -150,6 +159,7 @@ for ($i = 0; $i -lt 5 -and -not $writable; $i++) {
 if (-not $writable) { Out-Result $false 'composer_unavailable' 'not_sent' 'Could not safely locate the Codex Desktop composer' }
 # Once SetValue begins it can leave a draft even if UIA throws or returns a
 # stale read. Record that boundary before the call and never write it twice.
+Confirm-RequestPending
 [Console]::Out.WriteLine('{"phase":"editing"}')
 try { $value.SetValue($text) } catch { }
 $written = Wait-CodexComposerWritten {
@@ -165,11 +175,17 @@ $w = Get-CodexWindow
 if (-not $w -or (Get-ActiveTitle $w) -ne $title) { Out-Result $false 'delivery_uncertain' 'uncertain' 'Codex Desktop changed task after writing the draft' }
 $queue = $null; $send = $null; $direct = $null
 for ($i = 0; $i -lt 15 -and -not $queue -and -not $send -and -not $direct; $i++) {
-  $queue = Get-Button $w (Get-CodexQueueButtonNames); if (-not $queue) { $send = Get-Button $w @('Send', '发送') }
-  if (-not $queue -and -not $send) { $direct = Get-ComposerSteer $w }
+  $queue = Get-ComposerButton $w (Get-CodexQueueButtonNames); if (-not $queue) { $send = Get-ComposerButton $w @('Send', '发送') }
+  if (-not $queue -and -not $send) { $direct = Get-ComposerButton $w (Get-CodexSteerButtonNames) }
   if (-not $queue -and -not $send -and -not $direct) { Start-Sleep -Milliseconds 100 }
 }
 if (-not $queue -and -not $send -and -not $direct) { Out-Result $false 'control_not_found' 'uncertain' 'The send control was not available; the Desktop draft needs checking' }
+$action = Get-CodexComposerAction $Mode ([bool]$queue) ([bool]$send) ([bool]$direct)
+if ($action -eq 'queue_unavailable') {
+  # The user chose to wait for the current turn. A direct Steer button would
+  # send immediately; leave the verified draft alone rather than changing that intent.
+  Out-Result $false 'queue_control_unavailable' 'uncertain' 'The Desktop only offers immediate steering; the draft needs checking'
+}
 
 # A person may have edited or switched the draft while controls were loading.
 # Do not submit anything unless the target and complete text still match.
@@ -182,10 +198,11 @@ try {
   if (-not (Test-CodexComposerWritten $value.Current.Value $text @(Get-EditorChildNames $composer))) { throw 'draft changed' }
 } catch { Out-Result $false 'composer_write_unconfirmed' 'uncertain' 'The Desktop draft changed before sending; no automatic retry will be made' }
 
+Confirm-RequestPending
 [Console]::Out.WriteLine('{"phase":"write"}')
 # 后续消息 = 引导: the composer's own button steers the running turn at once,
 # which is what the person chose for follow-ups on this computer.
-if ($direct) { $send = $direct }
+if ($action -eq 'steer') { $send = $direct }
 if ($send) {
   # A paused queue may ask whether to clear it. Its effect on every existing
   # item is not reliably observable, so leave that decision to the person.

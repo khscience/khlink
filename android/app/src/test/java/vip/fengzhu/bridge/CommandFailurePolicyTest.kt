@@ -59,9 +59,9 @@ class CommandFailurePolicyTest {
     }
 
     @Test
-    fun piAndAntigravityThreadsHaveNoSettingsToRead() {
+    fun piThreadsHaveNoSettingsToRead() {
         assertFalse(backendHasThreadSettings("pi"))
-        assertFalse(backendHasThreadSettings("antigravity"))
+        assertTrue(backendHasThreadSettings("antigravity"))
         assertTrue(backendHasThreadSettings("codex"))
         assertTrue(backendHasThreadSettings("claude"))
         assertTrue(backendHasThreadSettings(null))

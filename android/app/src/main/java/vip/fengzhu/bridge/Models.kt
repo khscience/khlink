@@ -254,6 +254,18 @@ fun recentWorkdirs(threads: List<ThreadSummary>): List<String> = threads
     .filter { it.isNotBlank() }
     .distinctBy { it.lowercase().trimEnd('\\', '/') }
 
+/** A computer's operating system as its connector reports it. */
+data class ComputerSystem(val platform: String, val home: String? = null, val hermes: String? = null) {
+    /** macOS / Linux: folders look like /Users/me, and Hermes runs on the computer itself. */
+    val unix: Boolean get() = platform != "win32"
+    /** Hermes works in this computer's own folders (a Mac, or Hermes's Windows install), not in WSL. */
+    val hermesLocal: Boolean get() = unix || hermes == "windows"
+}
+
+/** Where a new task starts: the newest recent folder of the computer's kind, else its home (unix) or C:\. */
+fun defaultNewTaskDir(recentDirs: List<String>, unixPaths: Boolean, unixHome: String?): String =
+    recentDirs.firstOrNull { it.startsWith("/") == unixPaths } ?: if (unixPaths) unixHome.orEmpty() else "C:\\"
+
 /** The last folder name of a path, for a compact chip. */
 fun folderName(path: String): String = path.trimEnd('\\', '/').substringAfterLast('\\').substringAfterLast('/').ifBlank { path }
 
@@ -442,9 +454,9 @@ fun ClaudeUsage.refreshHelp(now: Long = System.currentTimeMillis()): String {
 
 }
 
-// A Claude Code model as reported by the desktop's own Claude Code
-// (value goes to --model; efforts are the levels that model accepts).
-data class ClaudeModel(val value: String, val label: String, val efforts: List<String>)
+// A CLI catalogue entry, or a model observed in a recent desktop session.
+// Desktop observations contain only effort levels actually seen there.
+data class ClaudeModel(val value: String, val label: String, val efforts: List<String>, val source: String = "")
 
 data class ThreadReadSnapshot(
     val allReadAt: Long = 0,
@@ -472,6 +484,28 @@ fun sortPinnedThreadSummaries(items: List<ThreadSummary>): List<ThreadSummary> =
             .thenByDescending { it.updatedAt }
             .thenBy { it.id },
     )
+
+/** Only a known terminal time can move a pin; unknown and tied pins keep their desktop order. */
+fun sortPinsByCompletion(items: List<ThreadSummary>, completionTimes: Map<String, Long>): List<ThreadSummary> =
+    items.sortedByDescending { completionTimes[it.id]?.takeIf { at -> at > 0L } ?: 0L }
+
+fun knownCompletionTimes(
+    observed: Map<String, Long>,
+    usage: Map<String, ConversationTokenUsage>,
+): Map<String, Long> {
+    val result = observed.filterValues { it > 0L }.toMutableMap()
+    usage.forEach { (id, value) ->
+        val last = value.completedTurns.maxOfOrNull { it.completedAt } ?: 0L
+        if (last > (result[id] ?: 0L)) result[id] = last
+    }
+    return result
+}
+
+fun isConfirmedCompletionForSort(status: String, quiet: Boolean, eventAt: Long, turnId: String?, sawStart: Boolean): Boolean =
+    !quiet && eventAt > 0L && status.equals("completed", ignoreCase = true) && (!turnId.isNullOrBlank() || sawStart)
+
+fun isNewCompletionForSort(eventAt: Long, turnId: String?, previousAt: Long, previousTurnId: String?): Boolean =
+    eventAt > previousAt && (turnId.isNullOrBlank() || turnId != previousTurnId)
 
 /** Tabs whose pinned section is a copy of the desktop app's sidebar pins. */
 val DESKTOP_MIRRORED_PIN_TABS = setOf("codex", "claude", "dsh", "hermes")
@@ -653,7 +687,12 @@ private val questionReplyRegex = Regex("""<send_user_message_question_reply>\s*(
  * by hand: compact JSON with characters left as typed, like Codex Desktop's.)
  */
 fun questionReplyText(question: CodexQuestion, answer: String): String =
-    "<send_user_message_question_reply>\n[{\"questionItemId\":${jsonString(question.id)},\"question\":${jsonString(question.question)},\"answer\":${jsonString(answer)}}]\n</send_user_message_question_reply>"
+    questionRepliesText(listOf(question), mapOf(question.id to answer))
+
+fun questionRepliesText(questions: List<CodexQuestion>, answers: Map<String, String>): String =
+    "<send_user_message_question_reply>\n[" + questions.joinToString(",") { question ->
+        "{\"questionItemId\":${jsonString(question.id)},\"question\":${jsonString(question.question)},\"answer\":${jsonString(answers[question.id].orEmpty())}}"
+    } + "]\n</send_user_message_question_reply>"
 
 private fun jsonString(value: String): String = buildString {
     append('"')
@@ -691,9 +730,28 @@ private fun jsonStringField(json: String, key: String, from: Int): Pair<String, 
     return null
 }
 
+/** Decode only a whole, well-formed reply escaped by the Desktop composer. */
+private fun normalizeDesktopQuestionReply(text: String): String {
+    val trimmed = text.trim()
+    if (!trimmed.startsWith("\\<send_user_message_question_reply>") ||
+        !trimmed.endsWith("\\</send_user_message_question_reply>")) return text
+    val decoded = Regex("""\\([\\<\r\n])""").replace(trimmed) { it.groupValues[1] }
+    val body = questionReplyRegex.matchEntire(decoded)?.groupValues?.get(1) ?: return text
+    val valid = runCatching {
+        val values = org.json.JSONArray(body)
+        values.length() > 0 && (0 until values.length()).all { index ->
+            val row = values.optJSONObject(index) ?: return@all false
+            row.opt("questionItemId") is String && row.optString("questionItemId").isNotBlank() &&
+                row.opt("question") is String && row.opt("answer") is String && row.optString("answer").isNotBlank()
+        }
+    }.getOrDefault(false)
+    if (!valid) return text
+    return decoded
+}
+
 /** The answers a user message carries, or none when it isn't an answer. */
 fun parseQuestionReplies(text: String): List<QuestionReply> {
-    val body = questionReplyRegex.find(text)?.groupValues?.get(1) ?: return emptyList()
+    val body = questionReplyRegex.find(normalizeDesktopQuestionReply(text))?.groupValues?.get(1) ?: return emptyList()
     val replies = mutableListOf<QuestionReply>()
     var at = 0
     while (true) {
@@ -797,6 +855,15 @@ fun mergeLatestHistoryPage(existing: List<HistoryItem>, latest: List<HistoryItem
  */
 fun hydrateLightDetailsAndPlaceImages(items: List<HistoryItem>, details: Map<String, HistoryItem>): List<HistoryItem> =
     deferGeneratedImagesToAnswerEnd(items.map { if (it.light) details[it.id] ?: it else it })
+
+/** A later running turn must not hide generated images from earlier answers. */
+fun historyIdsBeforeLatestUserMessage(items: List<HistoryItem>): Set<String> {
+    val lastUser = items.indexOfLast { it.type.contains("user", ignoreCase = true) }
+    return if (lastUser < 0) emptySet() else items.take(lastUser).mapTo(mutableSetOf()) { it.id }
+}
+
+fun showGeneratedImagesForItem(id: String, previousTurnIds: Set<String>, taskExecuting: Boolean): Boolean =
+    !taskExecuting || id in previousTurnIds
 
 fun deferGeneratedImagesToAnswerEnd(items: List<HistoryItem>): List<HistoryItem> {
     if (items.none { it.type == "imageGeneration" && it.images.isNotEmpty() }) return items
@@ -1049,7 +1116,12 @@ data class UpdateInfo(val versionName: String, val versionCode: Int, val url: St
     /** What this version changes, one line per change, from the signed manifest. */
     val notes: List<String> = emptyList(),
     /** Where to download it, in order: GitHub Releases first, then the relay. */
-    val urls: List<String> = listOf(url))
+    val urls: List<String> = listOf(url),
+    /** What every version since the installed one changes, newest first (skipped versions included). */
+    val noteGroups: List<UpdateNoteGroup> = if (notes.isEmpty()) emptyList() else listOf(UpdateNoteGroup(versionName, notes)))
+
+/** One version's changes in the update prompt. */
+data class UpdateNoteGroup(val version: String, val notes: List<String>)
 
 /** Where to look for the signed manifest: the mirrors in order (comma-separated), then the relay. */
 fun updateManifestSources(mirrors: String, relay: String): List<String> =
@@ -1089,6 +1161,31 @@ fun updateDownloadChannel(url: String): String {
 
 /** The manifest's notes text as lines; older manifests have none. */
 fun updateNotes(text: String?): List<String> = text.orEmpty().lines().map { it.trim() }.filter { it.isNotEmpty() }.take(12)
+
+/** Dotted version names compared number by number ("0.1.349" > "0.1.99"). */
+fun compareVersionNames(a: String, b: String): Int {
+    val x = a.split('.').map { it.toIntOrNull() ?: 0 }
+    val y = b.split('.').map { it.toIntOrNull() ?: 0 }
+    for (i in 0 until maxOf(x.size, y.size)) {
+        val d = x.getOrElse(i) { 0 } - y.getOrElse(i) { 0 }
+        if (d != 0) return d
+    }
+    return 0
+}
+
+/**
+ * The changes of every version newer than [current] up to [latest], newest
+ * first, from the manifest's per-version [history]. A manifest without history
+ * (or without the newest version in it) still shows [latestNotes].
+ */
+fun updateNoteGroups(latest: String, latestNotes: List<String>, history: List<Pair<String, String>>, current: String): List<UpdateNoteGroup> {
+    val groups = history
+        .filter { (version, _) -> compareVersionNames(version, current) > 0 && compareVersionNames(version, latest) <= 0 }
+        .sortedWith { a, b -> compareVersionNames(b.first, a.first) }
+        .map { (version, text) -> UpdateNoteGroup(version, updateNotes(text)) }
+        .filter { it.notes.isNotEmpty() }
+    return if (groups.none { it.version == latest } && latestNotes.isNotEmpty()) listOf(UpdateNoteGroup(latest, latestNotes)) + groups else groups
+}
 
 /** Deferral only silences automatic prompts; an explicit check always finds newer versions. */
 fun shouldOfferUpdate(
@@ -1163,12 +1260,23 @@ const val QUEUE_SETTLE_MS = 4_000L
  * and start it a second later; that one stays in the conversation as
  * "发送中" instead of flashing through the panel. It counts as waiting once
  * the computer says why it could not go in (a deferred steer) or after
- * [QUEUE_SETTLE_MS] still queued (2026-10-31).
+ * [QUEUE_SETTLE_MS] still queued. Codex can acknowledge a message through
+ * its queue even when no turn is running; that transport state alone does
+ * not mean the message is waiting behind another turn.
  */
-fun showInstructionInQueue(item: QueuedInstruction, now: Long = System.currentTimeMillis()): Boolean =
-    item.state in setOf("uncertain", "failed") ||
-        (item.state !in setOf("started", "steered", "completed", "cancelled") &&
-            (item.queueRequested || item.origin == "desktop" || (isFiledBehindTurn(item) && !isSettlingInQueue(item, now))))
+fun showInstructionInQueue(
+    item: QueuedInstruction,
+    now: Long = System.currentTimeMillis(),
+    backend: String? = null,
+    threadStatus: String? = null,
+): Boolean {
+    if (item.state in setOf("uncertain", "failed")) return true
+    if (item.state in setOf("started", "steered", "completed", "cancelled")) return false
+    if (item.queueRequested || item.origin == "desktop") return true
+    if (backend == "codex" && threadStatus != null &&
+        !isTurnBusyStatus(threadStatus) && !isCompactingThreadStatus(threadStatus)) return false
+    return isFiledBehindTurn(item) && !isSettlingInQueue(item, now)
+}
 
 private fun isFiledBehindTurn(item: QueuedInstruction) =
     item.blocking && item.state in setOf("pending", "dispatching", "desktop_queued")
@@ -1241,13 +1349,19 @@ private fun queuedStateRank(state: String): Int = when (state.lowercase()) {
     else -> 10
 }
 
-fun mergeTransientUserInstructions(history: List<HistoryItem>, instructions: List<QueuedInstruction>, now: Long = System.currentTimeMillis()): List<HistoryItem> {
+fun mergeTransientUserInstructions(
+    history: List<HistoryItem>,
+    instructions: List<QueuedInstruction>,
+    now: Long = System.currentTimeMillis(),
+    backend: String? = null,
+    threadStatus: String? = null,
+): List<HistoryItem> {
     // A non-blocking item is not genuinely waiting behind a busy turn (it is
     // about to be, or already is being, delivered) and belongs inline as a
     // "发送中" bubble. `uncertain`/`failed` always stay in the bottom queue
     // panel regardless of `blocking`, since they need their retry/confirm
     // affordances there.
-    val transient = instructions.filter { !showInstructionInQueue(it, now) && it.state !in setOf("completed", "cancelled") && !isQueuedInstructionDelivered(it, history) }
+    val transient = instructions.filter { !showInstructionInQueue(it, now, backend, threadStatus) && it.state !in setOf("completed", "cancelled") && !isQueuedInstructionDelivered(it, history) }
         .mapIndexed { index, item ->
             HistoryItem(
                 id = "outbound:${item.id}",
@@ -1295,7 +1409,7 @@ fun outboundBubbleText(item: QueuedInstruction): String = when {
 fun isOutboundInFlight(status: String?): Boolean = status == "sending" || status == "waiting"
 
 fun normalizeInstructionText(value: String): String =
-    value.replace("\r\n", "\n").replace(Regex("\\s+"), " ").trim()
+    normalizeDesktopQuestionReply(value).replace("\r\n", "\n").replace(Regex("\\s+"), " ").trim()
 
 /** The last confirmed history position before sending, independent of device clocks. */
 fun queuedInstructionHistoryBoundary(threadId: String, history: List<HistoryItem>, state: HistoryLoadState, syncing: Boolean): Long? {
@@ -1342,8 +1456,11 @@ fun isQueuedInstructionDelivered(item: QueuedInstruction, history: List<HistoryI
 class FollowupFailureNotices(seen: Collection<String> = emptyList()) {
     private val observed = seen.toMutableSet()
     @Synchronized
-    fun claim(threadId: String, item: QueuedInstruction, activeThreadId: String?): Boolean {
+    fun claim(threadId: String, item: QueuedInstruction, activeThreadId: String?, backend: String? = null): Boolean {
         if (threadId.isBlank() || item.id.isBlank() || item.state !in setOf("uncertain", "failed")) return false
+        // A Codex desktop send can briefly lose its acknowledgement on reconnect.
+        // Its live receipt card already explains that state and follows confirmation.
+        if (backend == "codex" && item.state == "uncertain") return false
         val first = observed.add("$threadId:${item.id}")
         // Background failures stay in their conversation's receipt card.
         // Replayed events must not raise a modal on the home screen.
@@ -1351,6 +1468,18 @@ class FollowupFailureNotices(seen: Collection<String> = emptyList()) {
     }
     @Synchronized
     fun snapshot(): Set<String> = observed.toSet()
+}
+
+// Old connectors uploaded Claude's internal compaction as a user message,
+// without retaining its isCompactSummary flag. Match the observed generated
+// envelope narrowly so ordinary messages that merely discuss summaries stay.
+fun isLegacyClaudeCompactionSummary(type: String, text: String, backend: String?): Boolean {
+    if (type != "userMessage" || (backend != null && backend != "claude")) return false
+    val value = text.trimStart()
+    return value.startsWith("This session is being continued from a previous conversation that ran out of context.") &&
+        value.take(512).contains("The summary below covers the earlier portion of the conversation.") &&
+        value.take(2048).contains("<system-reminder>") &&
+        value.take(2048).contains("<tools-used-before-summary>")
 }
 
 // The project's AGENTS.md also reaches the conversation as a user message (again after each compaction).
@@ -1626,21 +1755,22 @@ fun computerPathFromLink(link: String, cwd: String): String? {
 }
 
 /** A computer file the user asked to open: awaiting confirmation, loading, or failed. */
-data class ComputerFileLoad(val path: String, val confirmed: Boolean, val received: Long = 0, val total: Long = 0, val error: String? = null, val bytesPerSecond: Long = 0)
+data class ComputerFileLoad(val path: String, val confirmed: Boolean, val received: Long = 0, val total: Long = 0, val error: String? = null, val bytesPerSecond: Long = 0, val threadId: String? = null, val force: Boolean = false, val legacyFile: java.io.File? = null)
 
 /** A computer file already fetched to the phone, shown in the in-app viewer. */
-data class ComputerFileView(val path: String, val file: java.io.File)
+data class ComputerFileView(val path: String, val file: java.io.File, val threadId: String? = null)
 
 /** A file fetched from the computer and kept on the phone, listed on the 电脑取回的文件 page. */
-data class FetchedFile(val file: java.io.File, val path: String, val fetchedAt: Long)
+data class FetchedFile(val file: java.io.File, val path: String, val fetchedAt: Long, val threadId: String? = null, val legacy: Boolean = false)
 
 /** How the in-app viewer shows a fetched file. */
-enum class ComputerFileKind { MARKDOWN, HTML, TEXT, IMAGE, VIDEO, OTHER }
+enum class ComputerFileKind { MARKDOWN, HTML, TEXT, IMAGE, VIDEO, AUDIO, PDF, OTHER }
 
 private val VIEWER_TEXT_EXTENSIONS = setOf("txt", "log", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml", "ini", "cfg", "conf",
     "xml", "css", "js", "mjs", "cjs", "ts", "tsx", "jsx", "py", "kt", "kts", "java", "rs", "go", "c", "h", "cpp", "hpp",
     "cs", "sh", "ps1", "bat", "cmd", "sql", "gradle", "properties", "vue", "svelte", "rb", "php", "swift", "dart", "lua", "r", "tex")
 private val VIDEO_EXTENSIONS = setOf("mp4", "m4v", "mov", "webm", "mkv", "avi", "3gp")
+private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "oga", "3ga")
 private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "heif", "avif", "svg")
 
 fun computerFileKind(name: String): ComputerFileKind = when (name.substringAfterLast('.', "").lowercase()) {
@@ -1649,6 +1779,8 @@ fun computerFileKind(name: String): ComputerFileKind = when (name.substringAfter
     in VIEWER_TEXT_EXTENSIONS -> ComputerFileKind.TEXT
     in IMAGE_EXTENSIONS -> ComputerFileKind.IMAGE
     in VIDEO_EXTENSIONS -> ComputerFileKind.VIDEO
+    in AUDIO_EXTENSIONS -> ComputerFileKind.AUDIO
+    "pdf" -> ComputerFileKind.PDF
     else -> ComputerFileKind.OTHER
 }
 
@@ -1907,6 +2039,19 @@ fun wechatListOrder(threads: List<ThreadSummary>, highlights: List<ThreadSummary
     val rest = threads.filterNot { thread -> top.any { it.id == thread.id } }.sortedByDescending(::threadActivityTime)
     val pinned = rest.filter { it.pinned }.sortedBy { if (it.pinOrder >= 0) it.pinOrder else Int.MAX_VALUE }
     return (top + pinned + rest.filterNot { it.pinned }).distinctBy { it.id }
+}
+
+/** Keep all attention-worthy chats first, then sort the remaining pins by completion. */
+fun wechatListOrderByCompletion(
+    threads: List<ThreadSummary>, highlights: List<ThreadSummary>, completionTimes: Map<String, Long>,
+): List<ThreadSummary> {
+    val ids = threads.mapTo(HashSet()) { it.id }
+    val top = highlights.filter { it.id in ids }.distinctBy { it.id }
+    val topIds = top.mapTo(HashSet()) { it.id }
+    val remaining = threads.filterNot { it.id in topIds }
+    val pins = sortPinsByCompletion(sortPinnedThreadSummaries(remaining), completionTimes)
+    val rest = remaining.filterNot { it.pinned }.sortedByDescending(::threadActivityTime)
+    return (top + pins + rest).distinctBy { it.id }
 }
 
 /** How long a finished, unopened session keeps its red dot. */

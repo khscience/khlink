@@ -36,6 +36,9 @@ const UPLOAD_BATCH_BYTES = 1_500_000;
 const THREAD_PREFIX = 'hermes-';
 const OTHER_SURFACE_ACTIVE_MS = 3 * 60_000;
 const FILE_MAX_BYTES = 25 * 1024 * 1024;
+// Shown for a turn that ended without a reply, and why.
+const NO_REPLY = 'Hermes 没有回复';
+const CLI_ONLY_TEXT = '这个会话是在电脑上的 Hermes 里建的，这台电脑的 Hermes 只能从手机给它发文字（图片请在电脑上发，或在手机上新建会话）。';
 const HERMES_OFFLINE = 'Hermes 没有响应：请确认 Hermes 主机（WSL）已开机、hermes-gateway 正在运行。';
 const BACKGROUND_READ = /(\.read|\.get|\.list|capabilities|usage)$/;
 const SKIP_DISPLAY = new Set(['hidden', 'internal_notification', 'auto_continue', 'steer', 'model_switch']);
@@ -117,11 +120,13 @@ const MAX_USER_IMAGE_BYTES = 1_400_000;   // about 2 MB as a data URI, as for Cl
 // Tool output lists many paths; only pictures, video, audio and PDFs from it
 // are shown. Documents are shown when the reply itself names them.
 const MEDIA_ONLY = /.(?:png|jpe?g|gif|webp|bmp|svg|mp4|webm|mov|m4v|mp3|wav|ogg|m4a|pdf)$/i;
+// Hermes on Windows itself names files as C:\Users\...\x.png (no spaces).
+const MEDIA_PATH_WINDOWS = /(?:^|[\s"'`(\[<:：])([A-Za-z]:[\\/][^\s"'`<>()\[\]{}|*?]+?\.(?:png|jpe?g|gif|webp|bmp|svg|mp4|webm|mov|m4v|mp3|wav|ogg|m4a|pdf|csv|xlsx|docx|pptx|zip|md|txt|html))(?=$|[\s"'`)\]>.,;:，。；、])/gi;
 
-function mediaPaths(text, { documents = true } = {}) {
+function mediaPaths(text, { documents = true, windows = false } = {}) {
   const found = [];
   const source = String(text || '');
-  for (const match of source.matchAll(MEDIA_PATH)) {
+  for (const match of source.matchAll(windows ? MEDIA_PATH_WINDOWS : MEDIA_PATH)) {
     const file = match[1].replace(/[.,;:]+$/, '');
     if (!documents && !MEDIA_ONLY.test(file)) continue;
     if (!found.includes(file)) found.push(file);
@@ -188,7 +193,7 @@ const methods = {
     this.hermesThreadsFile = path.join(configDir, 'hermes-threads.json');
     // Not beside config.json: the phone may never read from the connector's
     // key folder (files.js), and it has to read these.
-    this.hermesFilesDir = process.env.HERMES_FILES_DIR || path.join(process.env.LOCALAPPDATA || os.homedir(), 'khLink', 'hermes-files');
+    this.hermesFilesDir = process.env.HERMES_FILES_DIR || path.join(process.env.LOCALAPPDATA || (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : os.homedir()), 'khLink', 'hermes-files');
     this.hermesThreads = this.readHermesThreads();
     this.hermesRunning = new Map();     // sessionId -> { startedAt, text, flushedText, lastFlushAt }
     this.hermesPermissions = new Map(); // requestId -> { rpcId, sessionId, options }
@@ -433,7 +438,7 @@ const methods = {
         meta.pendingCalls[callId] = { id: item.id, order: item.order, at, value: item.value };
         items.push(item);
       });
-      const files = await this.hermesMirrorFiles(mediaPaths(text), rowId, meta);
+      const files = await this.hermesMirrorFiles(mediaPaths(text, { windows: this.hermesTransport?.windows }), rowId, meta);
       if (files.length) push('-f', 15, { type: 'sentFiles', tool: 'hermes', status: 'completed', text: '', files });
       return items;
     }
@@ -450,7 +455,7 @@ const methods = {
         items.push({ id: pending.id, order: pending.order, at, value });
         delete meta.pendingCalls[callId];
       }
-      const files = await this.hermesMirrorFiles(mediaPaths(result, { documents: false }), rowId, meta);
+      const files = await this.hermesMirrorFiles(mediaPaths(result, { documents: false, windows: this.hermesTransport?.windows }), rowId, meta);
       if (files.length) push('-f', 15, { type: 'sentFiles', tool: 'hermes', status: 'completed', text: '', files });
       return items;
     }
@@ -466,7 +471,7 @@ const methods = {
     if (!paths.length) return files;
     fs.mkdirSync(this.hermesFilesDir, { recursive: true });
     for (const remote of paths) {
-      const name = path.posix.basename(remote);
+      const name = (this.hermesTransport?.pathLib || path.posix).basename(remote);
       const local = path.join(this.hermesFilesDir, `${rowId}-${crypto.createHash('sha256').update(remote).digest('hex').slice(0, 8)}-${name.replace(/[^\w.\-一-龥]/g, '_')}`);
       try {
         if (!fs.existsSync(local)) {
@@ -498,7 +503,7 @@ const methods = {
   async hermesUserImages(paths) {
     const images = [];
     for (const remote of paths.slice(0, MAX_USER_IMAGES)) {
-      const mimeType = IMAGE_MIME[path.posix.extname(remote).slice(1).toLowerCase()];
+      const mimeType = IMAGE_MIME[(this.hermesTransport?.pathLib || path.posix).extname(remote).slice(1).toLowerCase()];
       if (!mimeType) continue;
       try {
         const bytes = await this.hermesTransport.readFile(remote, MAX_USER_IMAGE_BYTES);
@@ -662,7 +667,8 @@ const methods = {
       try {
         const bytes = fs.readFileSync(item.path);
         const name = String(item.name || path.basename(item.path)).replace(/[^\w.\-一-龥]/g, '_');
-        const remote = await this.hermesTransport.writeFile(`/tmp/khlink-uploads/${Date.now()}-${name}`, bytes);
+        const target = this.hermesTransport.uploadPath ? this.hermesTransport.uploadPath(`${Date.now()}-${name}`) : `/tmp/khlink-uploads/${Date.now()}-${name}`;
+        const remote = await this.hermesTransport.writeFile(target, bytes);
         notes.push(`[附件] ${item.name || name}\n路径：${remote}`);
       } catch (error) { this.log(error); }
     }
@@ -672,11 +678,38 @@ const methods = {
     return blocks;
   },
 
+  async recordHermesTurnUsage(id, meta, run, result, completedAt) {
+    const u = result?.usage;
+    if (result?.stopReason !== 'end_turn' || completedAt <= run.startedAt) return;
+    const stored = await this.hermesTransport.store('messages', meta.sessionId, String(run.syncedAtStart), '200');
+    const rows = (stored?.messages || []).filter(row => row.active !== 0 && !row.display_kind);
+    // Never attach timing to an adjacent prompt or an incomplete read.
+    if (stored?.messages?.length >= 200) return;
+    const users = rows.filter(row => row.role === 'user');
+    if (users.length !== 1 || contentText(users[0].content).text.trim() !== run.promptText) return;
+    const answer = rows.findLast(row => row.role === 'assistant' && contentText(row.content).text.trim());
+    const finalAt = seconds(answer?.timestamp);
+    if (!answer || answer.id <= users[0].id || finalAt < run.startedAt || finalAt > completedAt) return;
+    const finalMessageId = `${id}-m${answer.id}`;
+    meta.measuredReplyMs = Object.fromEntries([...Object.entries(meta.measuredReplyMs || {}).filter(([key]) => key !== finalMessageId),
+      [finalMessageId, completedAt - run.startedAt]].slice(-200));
+    if (!Number.isSafeInteger(u?.inputTokens) || u.inputTokens < 0 || !Number.isSafeInteger(u.outputTokens) || u.outputTokens <= 0) {
+      this.saveHermesThreads();
+      return;
+    }
+    const usage = { input: u.inputTokens, output: u.outputTokens, total: u.inputTokens + u.outputTokens };
+    const turn = { turnId: `${id}-m${users[0].id}`, startedAt: run.startedAt, completedAt,
+      finalMessageId, finalMessageAt: finalAt, usage };
+    meta.completedUsage = [...(meta.completedUsage || []).filter(row => row.turnId !== turn.turnId), turn].slice(-200);
+    this.saveHermesThreads();
+  },
+
   // Run one phone turn. Returns once Hermes accepted it; the turn itself
   // continues in the background and is followed through the session store.
   async startHermesTurn(id, meta, blocks) {
     const sessionId = meta.sessionId;
-    await this.hermesAcp.attach(sessionId, meta.cwd || this.hermesHomeDir || '/');
+    await this.attachHermes(meta);
+    if (this.hermesAcp.resumable && !this.hermesAcp.resumable(sessionId)) return this.startHermesCliTurn(id, meta, blocks);
     const run = { startedAt: Date.now(), text: '', flushedText: '', lastFlushAt: 0, syncedAtStart: Number(meta.syncedMessageId) || 0,
       promptText: blocks.filter((block) => block.type === 'text').map((block) => block.text).join('\n').trim() };
     run.allText = '';
@@ -705,12 +738,18 @@ const methods = {
       this.emit('history.updated', id, { threadId: id, itemCount: 1, updatedAt: run.startedAt, backend: 'hermes' });
     }
     const promise = this.hermesAcp.prompt(sessionId, blocks);
+    let failure = null;
+    let terminalResult, completedAt;
     promise.then((result) => {
+      completedAt = Date.now();
+      terminalResult = result;
       meta.terminalStatus = result?.stopReason === 'cancelled' ? 'interrupted' : result?.stopReason === 'refusal' ? 'failed' : 'completed';
+      if (result?.stopReason === 'refusal' && !run.allText.trim()) failure = '模型拒绝了这次请求';
     }, (error) => {
       meta.terminalStatus = 'failed';
       this.log(new Error(`hermes turn ${sessionId}: ${error.message}`));
       meta.lastError = error.message;
+      failure = error.message;
     }).finally(async () => {
       if (run.flushTimer) clearTimeout(run.flushTimer);
       this.hermesRunning.delete(sessionId);
@@ -732,6 +771,8 @@ const methods = {
           });
         }
       }
+      if (terminalResult) await this.recordHermesTurnUsage(id, meta, run, terminalResult, completedAt).catch(error => this.log(error));
+      if (failure) await this.noteHermesNoReply(id, meta, run, failure);
       // One last read for the phone: the live row may have been uploaded
       // (and hidden) after its previous read.
       this.emit('history.updated', id, { threadId: id, itemCount: 1, updatedAt: Date.now(), backend: 'hermes' });
@@ -740,6 +781,70 @@ const methods = {
     });
     this.watchHermesTurn(sessionId);
     return promise;
+  },
+
+  // Attach over ACP, remembering a session it cannot resume (meta.cliOnly) so
+  // that later turns, and later connector runs, do not try again.
+  async attachHermes(meta, cwd) {
+    if (meta.cliOnly) this.hermesAcp.unresumable?.add(meta.sessionId);
+    const result = await this.hermesAcp.attach(meta.sessionId, cwd || meta.cwd || await this.hermesDefaultCwd());
+    if (this.hermesAcp.resumable && !this.hermesAcp.resumable(meta.sessionId) && !meta.cliOnly) { meta.cliOnly = true; this.saveHermesThreads(); }
+    return result;
+  },
+
+  // A turn that ended with nothing stored: one row saying so, after the
+  // latest stored message, so the phone does not just show its own message.
+  async noteHermesNoReply(id, meta, run, reason) {
+    const stored = await this.hermesTransport.store('messages', meta.sessionId, String(run.syncedAtStart), '60').catch(() => null);
+    if ((stored?.messages || []).some((row) => row.role === 'assistant' && contentText(row.content).text.trim())) return;
+    const at = Date.now();
+    const text = `${NO_REPLY}：${String(reason || '原因不明').trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' ').slice(0, 300)}`;
+    const order = (Number(meta.syncedMessageId) || 0) * SLOTS + LOCAL_SLOT + 38;
+    await this.queueHermesLive(id, async () => {
+      await this.uploadHermesItems(id, [{ id: `${id}-local-${run.startedAt}-noreply`, order, at, value: { type: 'agentMessage', text, status: null, createdAt: at } }]);
+    }).catch((error) => this.log(error));
+  },
+
+  // One turn through `hermes chat -Q -q … --resume`, for a session Hermes'
+  // ACP cannot resume (see HermesAcp.attach). Hermes appends the exchange to
+  // that session (`-z --resume` would start a new session instead) and the
+  // store is followed as for any turn; the reply arrives whole, not as it is
+  // written. Stop ends the process.
+  startHermesCliTurn(id, meta, blocks) {
+    const sessionId = meta.sessionId;
+    const text = blocks.filter((block) => block.type === 'text').map((block) => block.text).join('\n').trim();
+    const run = { startedAt: Date.now(), text: '', flushedText: '', lastFlushAt: 0, syncedAtStart: Number(meta.syncedMessageId) || 0,
+      promptText: text, allText: '', output: '', errors: '', cli: null, stopped: false };
+    const child = this.hermesTransport.spawnHermes(['chat', '-Q', '-q', text, '--resume', sessionId], { cwd: meta.cwd || undefined });
+    run.cli = child;
+    this.hermesRunning.set(sessionId, run);
+    meta.running = true; meta.terminalStatus = null; meta.activityAt = Date.now();
+    this.announceHermesStatus(id, meta);
+    child.stdout?.on('data', (chunk) => { run.output = (run.output + chunk.toString('utf8')).slice(-8000); });
+    child.stderr?.on('data', (chunk) => { run.errors = (run.errors + chunk.toString('utf8')).slice(-8000); });
+    const done = new Promise((resolve) => {
+      child.on('error', (error) => resolve({ error }));
+      child.on('close', (code) => resolve({ code }));
+    }).then(async ({ code, error }) => {
+      const completedAt = Date.now();
+      this.hermesRunning.delete(sessionId);
+      meta.running = false; meta.waiting = null;
+      meta.terminalStatus = run.stopped ? 'interrupted' : error || code !== 0 ? 'failed' : 'completed';
+      await this.pollHermes(id).catch((failure) => this.log(failure));
+      if (meta.terminalStatus === 'completed') await this.recordHermesTurnUsage(id, meta, run, { stopReason: 'end_turn' }, completedAt).catch(error => this.log(error));
+      if (!run.stopped) {
+        // Quiet mode prints "↻ Resumed session …" and "session_id: …" before the reply.
+        const said = run.output.split(/\r?\n/).map((line) => line.trim())
+          .filter((line) => line && !/Warning|warnings\.warn|^↻|^session_id:/.test(line));
+        const reason = error?.message || (code !== 0 ? (said.slice(-1)[0] || run.errors.trim().split(/\r?\n/).slice(-1)[0]) : said.slice(-1)[0]);
+        await this.noteHermesNoReply(id, meta, run, reason);
+      }
+      this.emit('history.updated', id, { threadId: id, itemCount: 1, updatedAt: Date.now(), backend: 'hermes' });
+      this.announceHermesStatus(id, meta);
+      this.saveHermesThreads();
+    });
+    this.watchHermesTurn(sessionId);
+    return done;
   },
 
   async hermesCommand(payload) {
@@ -752,16 +857,34 @@ const methods = {
       return { backend: 'hermes', offline: true };
     }
     switch (action) {
+      case 'hermes.models.list': {
+        const models = (this.hermesAcp.models?.availableModels || []).map(entry => ({ id: entry.modelId, label: entry.name || entry.modelId }));
+        if (!models.length) {
+          const cache = this.hermesPickerCache;
+          if (!cache || Date.now() - cache.at >= 60_000) {
+            this.hermesPickerCache = { at: Date.now(), result: this.hermesTransport.store('models').then(reply => reply?.models || [], () => []) };
+          }
+          models.push(...await this.hermesPickerCache.result);
+        }
+        // A cold connector still knows the models previously used on this PC.
+        for (const thread of this.hermesThreads.values()) {
+          const id = thread.modelId || thread.model;
+          if (id && !models.some(entry => entry.id === id)) models.unshift({ id, label: id });
+        }
+        return { models };
+      }
       case 'history.sync': {
         await this.pollHermes(id || null);
         return { synced: true, threadId: id, backend: 'hermes' };
       }
       case 'thread.new':
       case 'thread.newWithTurn': {
-        // Hermes runs on Linux: a Windows folder from the phone's recent list
-        // (or "~") means the Linux home directory.
+        // A folder of the other kind (a Windows folder from the phone's recent
+        // list for Hermes on Linux, or "~") means the home directory there.
         const asked = String(args.cwd || '').trim();
-        const cwd = asked.startsWith('/') ? asked : asked.startsWith('~/') ? `${await this.hermesDefaultCwd()}/${asked.slice(2)}` : await this.hermesDefaultCwd();
+        const absolute = this.hermesTransport.isAbsolute ? this.hermesTransport.isAbsolute(asked) : asked.startsWith('/');
+        const join = (this.hermesTransport.pathLib || path.posix).join;
+        const cwd = absolute ? asked : /^~[\\/]/.test(asked) ? join(await this.hermesDefaultCwd(), asked.slice(2)) : await this.hermesDefaultCwd();
         let created;
         try { created = await this.hermesAcp.newSession(cwd); }
         catch (error) { throw Object.assign(new Error(`${HERMES_OFFLINE}（${error.message}）`), { delivery: 'not_sent' }); }
@@ -773,7 +896,12 @@ const methods = {
         await this.uploadHermesIndex(newId, newMeta, true);
         newMeta.indexed = true;
         this.saveHermesThreads();
-        if (args.model) await this.hermesAcp.setModel(sessionId, String(args.model)).catch((error) => this.log(error));
+        if (args.model) {
+          await this.hermesAcp.setModel(sessionId, args.model);
+          newMeta.modelId = args.model;
+          this.hermesAcp.sessionModels.set(sessionId, args.model);
+          this.saveHermesThreads();
+        }
         if (String(args.text || '').trim() || args.attachments?.length) {
           const blocks = await this.hermesPromptBlocks(args);
           this.startHermesTurn(newId, newMeta, blocks).catch(() => {});
@@ -788,6 +916,9 @@ const methods = {
         const busy = this.hermesRunning.has(meta.sessionId);
         let blocks = await this.hermesPromptBlocks(args);
         if (!blocks.length) throw Object.assign(new Error('消息是空的'), { delivery: 'not_sent' });
+        if (busy && this.hermesRunning.get(meta.sessionId)?.cli) {
+          throw Object.assign(new Error('上一条消息还在电脑上的 Hermes 里运行，请等它结束（或先停止）再发。'), { delivery: 'not_sent' });
+        }
         if (busy) {
           if (blocks.some((block) => block.type === 'image')) {
             const { sendRunningImage } = require('./hermes-running-image');
@@ -806,15 +937,27 @@ const methods = {
           this.nudgeHermes([800, 3000]);
           return { accepted: true, queued: verb === '/queue', steered: verb === '/steer', backend: 'hermes' };
         }
-        try { await this.hermesAcp.attach(meta.sessionId, meta.cwd || await this.hermesDefaultCwd()); }
+        try { await this.attachHermes(meta); }
         catch (error) { throw Object.assign(new Error(`${HERMES_OFFLINE}（${error.message}）`), { delivery: 'not_sent' }); }
+        if (this.hermesAcp.resumable && !this.hermesAcp.resumable(meta.sessionId) && blocks.some((block) => block.type === 'image')) {
+          throw Object.assign(new Error(CLI_ONLY_TEXT), { delivery: 'not_sent' });
+        }
         this.startHermesTurn(id, meta, blocks).catch(() => {});
         return { accepted: true, queued: false, backend: 'hermes' };
       }
       case 'turn.stop': {
         if (!meta) throw new Error('没有找到这个 Hermes 会话');
+        const cliRun = this.hermesRunning.get(meta.sessionId);
+        if (cliRun?.cli) {
+          cliRun.stopped = true;
+          const pid = cliRun.cli.pid;
+          // hermes.exe starts Python under it: end the whole tree on Windows.
+          if (process.platform === 'win32' && pid) require('node:child_process').execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => {});
+          else try { cliRun.cli.kill(); } catch {}
+          return { stopped: true, backend: 'hermes' };
+        }
         if (!this.hermesRunning.has(meta.sessionId)) {
-          await this.hermesAcp.attach(meta.sessionId, meta.cwd || '/').catch(() => {});
+          await this.hermesAcp.attach(meta.sessionId, meta.cwd || await this.hermesDefaultCwd()).catch(() => {});
         }
         await this.hermesAcp.cancel(meta.sessionId);
         this.nudgeHermes();
@@ -853,11 +996,13 @@ const methods = {
       }
       case 'settings.get':
       case 'thread.settings.read': {
-        if (meta) await this.hermesAcp.attach(meta.sessionId, meta.cwd || await this.hermesDefaultCwd()).catch(() => {});
+        if (meta) await this.attachHermes(meta).catch(() => {});
         else if (!this.hermesAcp.models) await this.hermesAcp.start().catch(() => null);
         const models = this.hermesAcp.models;
         const current = (meta && (meta.modelId || this.hermesAcp.sessionModels.get(meta.sessionId))) || models?.currentModelId || '';
-        return { backend: 'hermes', settings: { model: hermesModelKey(current) }, catalog: hermesCatalog(models, current) };
+        const settings = { model: hermesModelKey(current) };
+        // Also at the top level, where the phone reads a command result's settings.
+        return { backend: 'hermes', ...settings, settings, catalog: hermesCatalog(models, current) };
       }
       case 'settings.set': {
         if (!meta) throw new Error('没有找到这个 Hermes 会话');
@@ -886,11 +1031,14 @@ const methods = {
   async hermesDefaultCwd() {
     if (this.hermesHomeDir) return this.hermesHomeDir;
     try {
-      const result = await this.hermesTransport.run('printf %s "$HOME"', { timeoutMs: 20_000 });
-      const home = result.stdout.toString('utf8').trim();
-      if (home.startsWith('/')) this.hermesHomeDir = home;
+      if (this.hermesTransport.homeDir) this.hermesHomeDir = await this.hermesTransport.homeDir();
+      else {
+        const result = await this.hermesTransport.run('printf %s "$HOME"', { timeoutMs: 20_000 });
+        const home = result.stdout.toString('utf8').trim();
+        if (home.startsWith('/')) this.hermesHomeDir = home;
+      }
     } catch { /* fall back below */ }
-    return this.hermesHomeDir || '/';
+    return this.hermesHomeDir || (this.hermesTransport.windows ? 'C:\\' : '/');
   },
 };
 
